@@ -88,10 +88,11 @@ export class AdaptiveRateLimiter {
    * @param exchange 交易所ID
    */
   private async acquirePermission(exchange: string): Promise<void> {
-    // Apply exponential backoff for successive errors
-    if ((this.successiveErrors[exchange] || 0) > 3) {
-      const backoff = Math.min(30000, 1000 * Math.pow(2, this.successiveErrors[exchange] - 3));
-      log(LogLevel.WARNING, `Applying backoff for ${exchange}: ${backoff}ms`);
+    // Apply exponential backoff for successive errors (max 5 seconds, not 30)
+    const errors = this.successiveErrors[exchange] || 0;
+    if (errors > 3) {
+      const backoff = Math.min(5000, 500 * Math.pow(2, errors - 3));
+      log(LogLevel.DEBUG, `Applying backoff for ${exchange}: ${backoff}ms (errors: ${errors})`);
       await new Promise(r => setTimeout(r, backoff));
     }
     
@@ -105,6 +106,32 @@ export class AdaptiveRateLimiter {
       log(LogLevel.DEBUG, `Rate limiting ${exchange}: waiting ${delay}ms`);
       await new Promise(r => setTimeout(r, delay));
     }
+  }
+  
+  /**
+   * Reset error count for an exchange
+   * @param exchange Exchange ID
+   * 
+   * 重置交易所的错误计数
+   */
+  resetErrors(exchange: string): void {
+    this.successiveErrors[exchange] = 0;
+    this.minInterval[exchange] = this.defaultMinInterval;
+    log(LogLevel.INFO, `Reset error count for ${exchange}`);
+  }
+  
+  /**
+   * Reset all error counts
+   * 重置所有错误计数
+   */
+  resetAllErrors(): void {
+    Object.keys(this.successiveErrors).forEach(exchange => {
+      this.successiveErrors[exchange] = 0;
+    });
+    Object.keys(this.minInterval).forEach(exchange => {
+      this.minInterval[exchange] = this.defaultMinInterval;
+    });
+    log(LogLevel.INFO, 'Reset all error counts');
   }
   
   /**
@@ -142,16 +169,16 @@ export class AdaptiveRateLimiter {
     this.lastResponse[exchange] = Date.now();
     this.successiveErrors[exchange] = (this.successiveErrors[exchange] || 0) + 1;
     
-    // Increase minimum interval for this exchange
+    // Increase minimum interval for this exchange (max 2 seconds)
     const currentInterval = this.minInterval[exchange] || this.defaultMinInterval;
-    this.minInterval[exchange] = Math.min(5000, currentInterval * 1.5);
+    this.minInterval[exchange] = Math.min(2000, currentInterval * 1.3);
     
-    log(LogLevel.WARNING, 
+    log(LogLevel.DEBUG, 
       `Recorded error for ${exchange}, successive errors: ${this.successiveErrors[exchange]}, ` +
       `new min interval: ${this.minInterval[exchange].toFixed(0)}ms`);
     
     // Lower concurrency if too many errors
-    if (this.successiveErrors[exchange] > 5) {
+    if (this.successiveErrors[exchange] > 10) {
       const queue = this.getQueue(exchange);
       if (queue.concurrency > 1) {
         queue.concurrency = queue.concurrency - 1;
@@ -213,6 +240,6 @@ export class AdaptiveRateLimiter {
   }
 }
 
-// Singleton instance
-// 单例实例
-export const rateLimiter = new AdaptiveRateLimiter();
+// Singleton instance with faster defaults
+// 单例实例，使用更快的默认值
+export const rateLimiter = new AdaptiveRateLimiter(100, 5); // 100ms interval, 5 concurrent

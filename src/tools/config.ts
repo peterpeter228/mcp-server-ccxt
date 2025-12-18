@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { log, LogLevel } from '../utils/logging.js';
 import { getProxyConfig, clearExchangeCache } from '../exchange/manager.js';
+import { rateLimiter } from '../utils/rate-limiter.js';
 
 /**
  * Register configuration tools with the MCP server
@@ -213,6 +214,48 @@ export function registerConfigTools(server: McpServer) {
       };
     } catch (error) {
       log(LogLevel.ERROR, `Error setting market type: ${error instanceof Error ? error.message : String(error)}`);
+      return {
+        content: [{
+          type: "text",
+          text: `Error: ${error instanceof Error ? error.message : String(error)}`
+        }],
+        isError: true
+      };
+    }
+  });
+
+  // Reset rate limiter tool
+  // 重置速率限制器工具
+  server.tool("reset-rate-limiter", "Reset rate limiter error counts and backoff timers for faster requests", {
+    exchange: z.string().optional().describe("Exchange ID to reset (optional, resets all if not specified)")
+  }, async ({ exchange }) => {
+    try {
+      if (exchange) {
+        rateLimiter.resetErrors(exchange);
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              message: `Rate limiter reset for ${exchange}`,
+              stats: rateLimiter.getStats()
+            }, null, 2)
+          }]
+        };
+      } else {
+        rateLimiter.resetAllErrors();
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              message: "Rate limiter reset for all exchanges",
+              stats: rateLimiter.getStats()
+            }, null, 2)
+          }]
+        };
+      }
+    } catch (error) {
       return {
         content: [{
           type: "text",
