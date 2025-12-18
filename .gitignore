@@ -17,3 +17,9 @@ yarn-error.log
 # OS
 .DS_Store
 Thumbs.db
+
+# Data storage (trade plans, stats)
+data/
+
+# Test coverage
+coverage/

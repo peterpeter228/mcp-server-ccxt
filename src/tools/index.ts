@@ -9,6 +9,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerPublicTools } from './public.js';
 import { registerPrivateTools } from './private.js';
 import { registerConfigTools } from './config.js';
+import { registerBinanceFuturesTools } from './binance-futures.js';
 import { log, LogLevel } from '../utils/logging.js';
 
 /**
@@ -31,6 +32,10 @@ export function registerAllTools(server: McpServer) {
     // Register configuration tools
     registerConfigTools(server);
     log(LogLevel.INFO, "Configuration tools registered successfully");
+    
+    // Register Binance Futures risk & order tools
+    registerBinanceFuturesTools(server);
+    log(LogLevel.INFO, "Binance Futures tools registered successfully");
   } catch (error) {
     log(LogLevel.ERROR, `Error registering tools: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
