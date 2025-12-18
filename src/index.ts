@@ -228,10 +228,20 @@ function createHttpServer(): http.Server {
     
     // SSE endpoint
     if (pathname === '/sse' && req.method === 'GET') {
-      log(LogLevel.INFO, 'New SSE connection');
+      log(LogLevel.INFO, 'New SSE connection established');
       
-      const transport = new SSEServerTransport('/messages', res);
+      // Set SSE headers
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': process.env.CORS_ORIGIN || '*'
+      });
+      
       const sessionId = Date.now().toString(36) + Math.random().toString(36).substring(2);
+      
+      // Create SSE transport with the message endpoint path
+      const transport = new SSEServerTransport(`/messages?sessionId=${sessionId}`, res);
       activeTransports.set(sessionId, transport);
       
       // Handle connection close
@@ -242,32 +252,52 @@ function createHttpServer(): http.Server {
       
       try {
         await server.connect(transport);
+        log(LogLevel.INFO, `SSE transport connected: ${sessionId}`);
       } catch (error) {
         log(LogLevel.ERROR, `SSE connection error: ${error}`);
         activeTransports.delete(sessionId);
+        if (!res.writableEnded) {
+          res.end();
+        }
       }
       return;
     }
     
-    // Message endpoint for SSE
+    // Message endpoint for SSE (receives client messages)
     if (pathname === '/messages' && req.method === 'POST') {
+      const sessionId = parsedUrl.query.sessionId as string;
+      
       let body = '';
       req.on('data', chunk => { body += chunk; });
       req.on('end', async () => {
         try {
-          // Find the transport and handle the message
-          // The SSEServerTransport handles this internally
-          res.writeHead(202, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ status: 'accepted' }));
+          const transport = sessionId ? activeTransports.get(sessionId) : null;
+          
+          if (transport) {
+            // Use the transport's handlePostMessage method
+            await transport.handlePostMessage(req, res, body);
+          } else {
+            // If no session, try to find any active transport
+            const anyTransport = activeTransports.values().next().value;
+            if (anyTransport) {
+              await anyTransport.handlePostMessage(req, res, body);
+            } else {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'No active SSE session. Connect to /sse first.' }));
+            }
+          }
         } catch (error) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: String(error) }));
+          log(LogLevel.ERROR, `Message handling error: ${error}`);
+          if (!res.writableEnded) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: String(error) }));
+          }
         }
       });
       return;
     }
     
-    // HTTP Streamable endpoint
+    // HTTP Streamable endpoint (JSON-RPC over HTTP)
     if (pathname === '/mcp' && req.method === 'POST') {
       let body = '';
       req.on('data', chunk => { body += chunk; });
@@ -276,22 +306,47 @@ function createHttpServer(): http.Server {
           const request = JSON.parse(body);
           log(LogLevel.DEBUG, `HTTP request: ${JSON.stringify(request)}`);
           
-          // For HTTP streamable, we need to create a one-shot SSE response
-          res.writeHead(200, {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive'
+          // For simple HTTP mode, we return JSON response directly
+          // This is a simplified implementation for tools that don't need streaming
+          res.writeHead(200, { 
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': process.env.CORS_ORIGIN || '*'
           });
           
-          // Create a temporary SSE transport for this request
-          const transport = new SSEServerTransport('/mcp', res);
-          
-          try {
-            await server.connect(transport);
-            // Send the request through the transport
-            await transport.handlePostMessage(req, res, body);
-          } catch (error) {
-            log(LogLevel.ERROR, `HTTP stream error: ${error}`);
+          // Handle the JSON-RPC request manually
+          if (request.method === 'tools/list') {
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: {
+                tools: [] // Tools are registered, but for HTTP mode suggest using SSE
+              }
+            }));
+          } else if (request.method === 'initialize') {
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: {
+                protocolVersion: '2024-11-05',
+                serverInfo: {
+                  name: 'CCXT MCP Server',
+                  version: '1.3.0'
+                },
+                capabilities: {
+                  tools: {},
+                  resources: {}
+                }
+              }
+            }));
+          } else {
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              error: {
+                code: -32601,
+                message: 'For full functionality, please use SSE mode at /sse endpoint'
+              }
+            }));
           }
         } catch (error) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
