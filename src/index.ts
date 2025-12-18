@@ -36,7 +36,7 @@ import dotenv from 'dotenv';
 import { log, LogLevel, setLogLevel } from './utils/logging.js';
 import { getCacheStats, clearCache } from './utils/cache.js';
 import { rateLimiter } from './utils/rate-limiter.js';
-import { SUPPORTED_EXCHANGES, getExchange } from './exchange/manager.js';
+import { SUPPORTED_EXCHANGES, getPublicExchange } from './exchange/manager.js';
 import { registerAllTools } from './tools/index.js';
 
 // Load environment variables
@@ -77,7 +77,7 @@ server.resource("markets", new ResourceTemplate("ccxt://{exchange}/markets", { l
   async (uri, params) => {
     try {
       const exchange = params.exchange as string;
-      const ex = getExchange(exchange);
+      const ex = getPublicExchange(exchange);
       await ex.loadMarkets();
       
       const markets = Object.values(ex.markets).map(market => ({
@@ -111,7 +111,7 @@ server.resource("ticker", new ResourceTemplate("ccxt://{exchange}/ticker/{symbol
     try {
       const exchange = params.exchange as string;
       const symbol = params.symbol as string;
-      const ex = getExchange(exchange);
+      const ex = getPublicExchange(exchange);
       const ticker = await ex.fetchTicker(symbol);
       
       return {
@@ -138,7 +138,7 @@ server.resource("order-book", new ResourceTemplate("ccxt://{exchange}/orderbook/
     try {
       const exchange = params.exchange as string;
       const symbol = params.symbol as string;
-      const ex = getExchange(exchange);
+      const ex = getPublicExchange(exchange);
       const orderbook = await ex.fetchOrderBook(symbol);
       
       return {

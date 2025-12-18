@@ -7,7 +7,7 @@
  */
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { getExchange, getExchangeWithMarketType, validateSymbol, SUPPORTED_EXCHANGES, MarketType } from '../exchange/manager.js';
+import { getPublicExchange, validateSymbol, SUPPORTED_EXCHANGES, MarketType } from '../exchange/manager.js';
 import { getCachedData } from '../utils/cache.js';
 import { rateLimiter } from '../utils/rate-limiter.js';
 import { log, LogLevel } from '../utils/logging.js';
@@ -36,8 +36,8 @@ export function registerPublicTools(server: McpServer) {
     try {
       return await rateLimiter.execute(exchange, async () => {
         const ex = marketType 
-          ? getExchangeWithMarketType(exchange, marketType)
-          : getExchange(exchange);
+          ? getPublicExchange(exchange, marketType)
+          : getPublicExchange(exchange);
         const cacheKey = `ticker:${exchange}:${marketType || 'spot'}:${symbol}`;
         
         const ticker = await getCachedData(cacheKey, async () => {
@@ -74,8 +74,8 @@ export function registerPublicTools(server: McpServer) {
     try {
       return await rateLimiter.execute(exchange, async () => {
         const ex = marketType 
-          ? getExchangeWithMarketType(exchange, marketType)
-          : getExchange(exchange);
+          ? getPublicExchange(exchange, marketType)
+          : getPublicExchange(exchange);
         const cacheKey = `tickers:${exchange}:${marketType || 'spot'}:${symbols.join(',')}`;
         
         const tickers = await getCachedData(cacheKey, async () => {
@@ -111,7 +111,7 @@ export function registerPublicTools(server: McpServer) {
   }, async ({ exchange, symbol, limit }) => {
     try {
       return await rateLimiter.execute(exchange, async () => {
-        const ex = getExchange(exchange);
+        const ex = getPublicExchange(exchange);
         const cacheKey = `orderbook:${exchange}:${symbol}:${limit}`;
         
         const orderbook = await getCachedData(cacheKey, async () => {
@@ -148,7 +148,7 @@ export function registerPublicTools(server: McpServer) {
   }, async ({ exchange, symbol, timeframe, limit }) => {
     try {
       return await rateLimiter.execute(exchange, async () => {
-        const ex = getExchange(exchange);
+        const ex = getPublicExchange(exchange);
         const cacheKey = `ohlcv:${exchange}:${symbol}:${timeframe}:${limit}`;
         
         const ohlcv = await getCachedData(cacheKey, async () => {
@@ -184,7 +184,7 @@ export function registerPublicTools(server: McpServer) {
   }, async ({ exchange, symbol, limit }) => {
     try {
       return await rateLimiter.execute(exchange, async () => {
-        const ex = getExchange(exchange);
+        const ex = getPublicExchange(exchange);
         const cacheKey = `trades:${exchange}:${symbol}:${limit}`;
         
         const trades = await getCachedData(cacheKey, async () => {
@@ -220,7 +220,7 @@ export function registerPublicTools(server: McpServer) {
   }, async ({ exchange, page, pageSize }) => {
     try {
       return await rateLimiter.execute(exchange, async () => {
-        const ex = getExchange(exchange);
+        const ex = getPublicExchange(exchange);
         const cacheKey = `markets:${exchange}`;
         
         const allMarkets = await getCachedData(cacheKey, async () => {
@@ -267,8 +267,8 @@ export function registerPublicTools(server: McpServer) {
     try {
       return await rateLimiter.execute(exchange, async () => {
         const ex = marketType 
-          ? getExchangeWithMarketType(exchange, marketType)
-          : getExchange(exchange);
+          ? getPublicExchange(exchange, marketType)
+          : getPublicExchange(exchange);
         const cacheKey = `status:${exchange}:${marketType || 'spot'}`;
         
         const info = await getCachedData(cacheKey, async () => {
@@ -305,7 +305,7 @@ export function registerPublicTools(server: McpServer) {
     try {
       return await rateLimiter.execute(exchange, async () => {
         // Get futures exchange
-        const ex = getExchangeWithMarketType(exchange, marketType);
+        const ex = getPublicExchange(exchange, marketType);
         const cacheKey = `leverage_tiers:${exchange}:${marketType}:${symbol || 'all'}`;
         
         const tiers = await getCachedData(cacheKey, async () => {
@@ -346,7 +346,7 @@ export function registerPublicTools(server: McpServer) {
     try {
       return await rateLimiter.execute(exchange, async () => {
         // Get futures exchange
-        const ex = getExchangeWithMarketType(exchange, marketType);
+        const ex = getPublicExchange(exchange, marketType);
         const cacheKey = `funding_rates:${exchange}:${marketType}:${symbols ? symbols.join(',') : 'all'}`;
         
         const rates = await getCachedData(cacheKey, async () => {
@@ -384,7 +384,7 @@ export function registerPublicTools(server: McpServer) {
   }, async ({ exchange }) => {
     try {
       return await rateLimiter.execute(exchange, async () => {
-        const ex = getExchange(exchange);
+        const ex = getPublicExchange(exchange);
         // Get markets and group by contract type
         let marketTypes = ['spot']; // Spot is always available
         
@@ -406,7 +406,7 @@ export function registerPublicTools(server: McpServer) {
         
         // Manually check for common market types
         try {
-          const futureEx = getExchangeWithMarketType(exchange, 'future');
+          const futureEx = getPublicExchange(exchange, 'future');
           await futureEx.loadMarkets();
           if (Object.keys(futureEx.markets).length > 0) {
             if (!marketTypes.includes('future')) marketTypes.push('future');
@@ -416,7 +416,7 @@ export function registerPublicTools(server: McpServer) {
         }
         
         try {
-          const swapEx = getExchangeWithMarketType(exchange, 'swap');
+          const swapEx = getPublicExchange(exchange, 'swap');
           await swapEx.loadMarkets();
           if (Object.keys(swapEx.markets).length > 0) {
             if (!marketTypes.includes('swap')) marketTypes.push('swap');

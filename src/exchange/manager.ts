@@ -107,6 +107,56 @@ export function getExchange(exchangeId?: string): ccxt.Exchange {
 }
 
 /**
+ * Get exchange instance for PUBLIC data only (no authentication)
+ * This avoids API key issues for public endpoints
+ * 
+ * 获取仅用于公开数据的交易所实例（无需认证）
+ * 这样可以避免公开接口的 API 密钥问题
+ */
+export function getPublicExchange(exchangeId?: string, marketType: MarketType | string = MarketType.SPOT): ccxt.Exchange {
+  const id = (exchangeId || DEFAULT_EXCHANGE).toLowerCase();
+  const type = marketType || DEFAULT_MARKET_TYPE;
+  
+  // Use a separate cache for public exchanges
+  const cacheKey = `public:${id}:${type}`;
+  
+  if (!exchanges[cacheKey]) {
+    if (!SUPPORTED_EXCHANGES.includes(id)) {
+      throw new Error(`Exchange '${id}' not supported`);
+    }
+    
+    try {
+      log(LogLevel.DEBUG, `Initializing public exchange: ${id} (${type})`);
+      const ExchangeClass = ccxt[id as keyof typeof ccxt];
+      
+      // Configure options WITHOUT authentication
+      const options: any = {
+        enableRateLimit: true,
+        options: {}
+      };
+      
+      // Configure market type specifics
+      if (type !== MarketType.SPOT) {
+        options.options.defaultType = type;
+      }
+      
+      // Add proxy configuration if enabled
+      const proxyConfig = getProxyConfig();
+      if (proxyConfig) {
+        options.proxy = formatProxyUrl(proxyConfig);
+      }
+      
+      exchanges[cacheKey] = new (ExchangeClass as any)(options);
+    } catch (error) {
+      log(LogLevel.ERROR, `Failed to initialize public exchange ${id}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Failed to initialize public exchange ${id}: ${error.message}`);
+    }
+  }
+  
+  return exchanges[cacheKey];
+}
+
+/**
  * Get exchange instance with specific market type
  * @param exchangeId Exchange ID
  * @param marketType Market type (spot, future, etc.)
@@ -119,13 +169,20 @@ export function getExchangeWithMarketType(exchangeId?: string, marketType: Marke
   // Create a cache key that includes both exchange ID and market type
   const cacheKey = `${id}:${type}`;
   
+  // Check if we have API credentials configured
+  const apiKey = process.env[`${id.toUpperCase()}_API_KEY`];
+  const secret = process.env[`${id.toUpperCase()}_SECRET`];
+  
+  // If no credentials, use public exchange
+  if (!apiKey || !secret) {
+    return getPublicExchange(id, type);
+  }
+  
   if (!exchanges[cacheKey]) {
     if (!SUPPORTED_EXCHANGES.includes(id)) {
       throw new Error(`Exchange '${id}' not supported`);
     }
     
-    const apiKey = process.env[`${id.toUpperCase()}_API_KEY`];
-    const secret = process.env[`${id.toUpperCase()}_SECRET`];
     const passphrase = process.env[`${id.toUpperCase()}_PASSPHRASE`];
     
     try {
