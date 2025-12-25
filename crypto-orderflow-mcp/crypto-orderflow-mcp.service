@@ -1,0 +1,41 @@
+[Unit]
+Description=Crypto Orderflow MCP Server
+Documentation=https://github.com/your-repo/crypto-orderflow-mcp
+After=network.target
+
+[Service]
+Type=simple
+User=mcp
+Group=mcp
+WorkingDirectory=/opt/crypto-orderflow-mcp
+Environment=PYTHONPATH=/opt/crypto-orderflow-mcp
+EnvironmentFile=/opt/crypto-orderflow-mcp/.env
+
+ExecStart=/opt/crypto-orderflow-mcp/venv/bin/python -m src.main
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/opt/crypto-orderflow-mcp/data
+
+# Resource limits
+MemoryMax=1G
+CPUQuota=200%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=crypto-orderflow-mcp
+
+[Install]
+WantedBy=multi-user.target
