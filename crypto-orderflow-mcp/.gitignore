@@ -52,8 +52,8 @@ htmlcov/
 .env.local
 .env.*.local
 
-# Data
-data/
+# Data (only root level data directory for DB files)
+/data/
 *.db
 *.sqlite
 *.sqlite3

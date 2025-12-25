@@ -19,7 +19,8 @@ yarn-error.log
 Thumbs.db
 
 # Data storage (trade plans, stats)
-data/
+/data/
+!/*/src/data/
 
 # Test coverage
 coverage/
