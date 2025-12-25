@@ -5,9 +5,9 @@ Returns orderbook depth delta within price range.
 
 from typing import Any
 
-from ..indicators import DepthDeltaCalculator
-from ..data import OrderbookManager
-from ..utils import get_logger, get_utc_now_ms
+from src.indicators import DepthDeltaCalculator
+from src.data import OrderbookManager
+from src.utils import get_logger, get_utc_now_ms
 
 logger = get_logger(__name__)
 

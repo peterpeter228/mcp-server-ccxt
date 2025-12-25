@@ -6,8 +6,8 @@ Returns recent liquidation events.
 from collections import deque
 from typing import Any, Deque
 
-from ..storage import SQLiteStore
-from ..utils import get_logger, get_utc_now_ms
+from src.storage import SQLiteStore
+from src.utils import get_logger, get_utc_now_ms
 
 logger = get_logger(__name__)
 

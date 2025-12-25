@@ -3,13 +3,19 @@ Main entry point for Crypto Orderflow MCP Server.
 """
 
 import asyncio
+import os
 import signal
 import sys
+from pathlib import Path
 from typing import NoReturn
 
-from .config import get_config
-from .server import CryptoMCPServer
-from .utils import setup_logging, get_logger
+# Add parent directory to path for imports when running directly
+if __name__ == "__main__" or "src.main" in sys.modules:
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.config import get_config
+from src.server import CryptoMCPServer
+from src.utils import setup_logging, get_logger
 
 
 async def main_async() -> None:

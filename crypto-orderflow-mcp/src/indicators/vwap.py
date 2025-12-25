@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
-from ..data.trade_aggregator import AggregatedTrade
-from ..utils import (
+from src.data.trade_aggregator import AggregatedTrade
+from src.utils import (
     get_logger,
     get_utc_now_ms,
     get_day_start_ms,

@@ -8,7 +8,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine, TypeVar
 
-from ..utils import get_logger
+from src.utils import get_logger
 
 logger = get_logger(__name__)
 

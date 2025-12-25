@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
-from ..data.trade_aggregator import FootprintBar, TradeAggregator, AggregatedTrade
-from ..utils import get_logger, get_utc_now_ms, align_timestamp_to_timeframe, get_timeframe_ms
+from src.data.trade_aggregator import FootprintBar, TradeAggregator, AggregatedTrade
+from src.utils import get_logger, get_utc_now_ms, align_timestamp_to_timeframe, get_timeframe_ms
 
 logger = get_logger(__name__)
 

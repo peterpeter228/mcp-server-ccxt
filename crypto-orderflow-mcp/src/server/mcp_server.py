@@ -9,9 +9,6 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Deque
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
 from starlette.applications import Starlette
 from starlette.routing import Route, Mount
 from starlette.responses import JSONResponse, Response
@@ -19,11 +16,11 @@ from starlette.requests import Request
 from sse_starlette.sse import EventSourceResponse
 import uvicorn
 
-from ..config import get_config
-from ..utils import get_logger, setup_logging, get_utc_now_ms
-from ..data import BinanceRestClient, BinanceWebSocketClient, OrderbookManager, TradeAggregator, AggregatedTrade
-from ..data.binance_ws import StreamType, BinanceAllMarketsWebSocket
-from ..indicators import (
+from src.config import get_config
+from src.utils import get_logger, setup_logging, get_utc_now_ms
+from src.data import BinanceRestClient, BinanceWebSocketClient, OrderbookManager, TradeAggregator, AggregatedTrade
+from src.data.binance_ws import StreamType, BinanceAllMarketsWebSocket
+from src.indicators import (
     VWAPCalculator,
     VolumeProfileCalculator,
     SessionLevelCalculator,
@@ -32,8 +29,8 @@ from ..indicators import (
     ImbalanceDetector,
     DepthDeltaCalculator,
 )
-from ..storage import SQLiteStore, DataCache
-from ..tools import (
+from src.storage import SQLiteStore, DataCache
+from src.tools import (
     get_market_snapshot,
     get_key_levels,
     get_footprint,
@@ -89,7 +86,6 @@ class CryptoMCPServer:
     
     # State
     _running: bool = False
-    _mcp_server: Server | None = None
     
     async def initialize(self) -> None:
         """Initialize all components."""

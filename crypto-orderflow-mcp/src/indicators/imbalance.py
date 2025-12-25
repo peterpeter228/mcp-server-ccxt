@@ -7,9 +7,9 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
-from ..data.trade_aggregator import TradeAggregator, FootprintBar
-from ..config import get_config
-from ..utils import get_logger, get_utc_now_ms
+from src.data.trade_aggregator import TradeAggregator, FootprintBar
+from src.config import get_config
+from src.utils import get_logger, get_utc_now_ms
 
 logger = get_logger(__name__)
 

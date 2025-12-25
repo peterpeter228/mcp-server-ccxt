@@ -69,10 +69,13 @@ LOG_LEVEL=INFO
 ### 运行
 
 ```bash
-# 本地运行
-python -m src.main
+# 方法 1: 使用启动脚本 (推荐)
+python run.py
 
-# 或使用 Docker
+# 方法 2: 设置 PYTHONPATH
+PYTHONPATH=. python -m src.main
+
+# 方法 3: 使用 Docker
 docker-compose -f docker/docker-compose.yml up -d
 ```
 

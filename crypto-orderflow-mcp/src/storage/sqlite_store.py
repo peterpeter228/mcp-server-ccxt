@@ -14,8 +14,8 @@ from typing import Any
 
 import aiosqlite
 
-from ..config import get_config
-from ..utils import get_logger, get_utc_now_ms, get_day_start_ms, ms_to_datetime
+from src.config import get_config
+from src.utils import get_logger, get_utc_now_ms, get_day_start_ms, ms_to_datetime
 
 logger = get_logger(__name__)
 

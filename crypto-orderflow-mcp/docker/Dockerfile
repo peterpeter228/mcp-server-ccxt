@@ -32,6 +32,7 @@ WORKDIR /app
 
 # Copy application code
 COPY src/ ./src/
+COPY run.py .
 COPY pyproject.toml .
 
 # Create data directory
@@ -56,5 +57,8 @@ ENV PYTHONUNBUFFERED=1 \
     LOG_FORMAT=json \
     CACHE_DB_PATH=/app/data/orderflow_cache.db
 
+# Set Python path
+ENV PYTHONPATH=/app
+
 # Run the server
-CMD ["python", "-m", "src.main"]
+CMD ["python", "run.py"]
