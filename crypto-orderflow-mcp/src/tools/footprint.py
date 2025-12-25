@@ -1,7 +1,23 @@
 """
+
+import sys
+from pathlib import Path
+
+_project_root = str(Path(__file__).parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 get_footprint tool implementation.
 Returns footprint bars with volume by price level.
 """
+
+import sys
+from pathlib import Path
+
+_project_root = str(Path(__file__).parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 
 from typing import Any
 

@@ -75,7 +75,7 @@ class Config:
     
     # Server
     host: str = field(default_factory=lambda: _get_env("HOST", "0.0.0.0"))
-    port: int = field(default_factory=lambda: _get_env_int("PORT", 8000))
+    port: int = field(default_factory=lambda: _get_env_int("PORT", 8022))
     
     # Database
     cache_db_path: str = field(

@@ -1,7 +1,23 @@
 """
+
+import sys
+from pathlib import Path
+
+_project_root = str(Path(__file__).parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 get_key_levels tool implementation.
 Returns VWAP, Volume Profile, and Session levels.
 """
+
+import sys
+from pathlib import Path
+
+_project_root = str(Path(__file__).parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 
 from datetime import datetime, timezone
 from typing import Any

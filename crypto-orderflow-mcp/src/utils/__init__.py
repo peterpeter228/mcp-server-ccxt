@@ -1,8 +1,15 @@
 """Utility modules for Crypto Orderflow MCP Server."""
 
-from .logging import get_logger, setup_logging
-from .rate_limiter import RateLimiter
-from .time_utils import (
+import sys
+from pathlib import Path
+
+_project_root = str(Path(__file__).parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from src.utils.logging import get_logger, setup_logging
+from src.utils.rate_limiter import RateLimiter
+from src.utils.time_utils import (
     ms_to_datetime,
     datetime_to_ms,
     get_utc_now,

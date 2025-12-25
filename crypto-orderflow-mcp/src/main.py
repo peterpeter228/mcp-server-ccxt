@@ -9,13 +9,14 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
-# Add parent directory to path for imports when running directly
-if __name__ == "__main__" or "src.main" in sys.modules:
-    sys.path.insert(0, str(Path(__file__).parent.parent))
+# Ensure project root is in path
+_project_root = str(Path(__file__).parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 from src.config import get_config
-from src.server import CryptoMCPServer
-from src.utils import setup_logging, get_logger
+from src.server.mcp_server import CryptoMCPServer
+from src.utils.logging import setup_logging, get_logger
 
 
 async def main_async() -> None:

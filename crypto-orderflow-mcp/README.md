@@ -57,7 +57,7 @@ SYMBOLS=BTCUSDT,ETHUSDT
 
 # 服务器配置
 HOST=0.0.0.0
-PORT=8000
+PORT=8022
 
 # 数据库路径
 CACHE_DB_PATH=./data/orderflow_cache.db
@@ -222,13 +222,13 @@ GET /api/liquidations/{symbol}    # 清算事件
 1. 打开 Cherry Studio 设置
 2. 添加新的 MCP Server
 3. 类型选择：`SSE`
-4. URL 填写：`http://your-server:8000/sse`
+4. URL 填写：`http://your-server:8022/sse`
 
 ### Streamable HTTP 方式
 1. 打开 Cherry Studio 设置
 2. 添加新的 MCP Server
 3. 类型选择：`Streamable HTTP`
-4. URL 填写：`http://your-server:8000/mcp`
+4. URL 填写：`http://your-server:8022/mcp`
 
 ### 示例配置 JSON
 ```json
@@ -236,7 +236,7 @@ GET /api/liquidations/{symbol}    # 清算事件
   "mcpServers": {
     "crypto-orderflow": {
       "type": "streamableHttp",
-      "url": "http://localhost:8000/mcp"
+      "url": "http://localhost:8022/mcp"
     }
   }
 }
@@ -255,7 +255,7 @@ docker-compose -f docker/docker-compose.yml up -d
 
 ```bash
 docker build -t crypto-orderflow-mcp -f docker/Dockerfile .
-docker run -d -p 8000:8000 --name crypto-mcp crypto-orderflow-mcp
+docker run -d -p 8022:8022 --name crypto-mcp crypto-orderflow-mcp
 ```
 
 ## ⚙️ Systemd 服务 (生产环境)
@@ -348,7 +348,7 @@ crypto-orderflow-mcp/
 | `BINANCE_WS_URL` | `wss://fstream.binance.com` | Binance WebSocket |
 | `SYMBOLS` | `BTCUSDT,ETHUSDT` | 监控的交易对 |
 | `HOST` | `0.0.0.0` | 服务器地址 |
-| `PORT` | `8000` | 服务器端口 |
+| `PORT` | `8022` | 服务器端口 |
 | `CACHE_DB_PATH` | `./data/orderflow_cache.db` | SQLite 路径 |
 | `TRADE_CACHE_DAYS` | `7` | 数据保留天数 |
 | `VALUE_AREA_PERCENT` | `70` | Value Area 百分比 |

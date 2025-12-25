@@ -1,7 +1,23 @@
 """
+
+import sys
+from pathlib import Path
+
+_project_root = str(Path(__file__).parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 Session high/low level calculator.
 Tracks highs and lows for Tokyo, London, and New York trading sessions.
 """
+
+import sys
+from pathlib import Path
+
+_project_root = str(Path(__file__).parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone

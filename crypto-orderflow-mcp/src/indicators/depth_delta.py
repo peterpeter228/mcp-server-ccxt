@@ -1,7 +1,23 @@
 """
+
+import sys
+from pathlib import Path
+
+_project_root = str(Path(__file__).parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 Orderbook Depth Delta calculator.
 Monitors changes in orderbook depth over time.
 """
+
+import sys
+from pathlib import Path
+
+_project_root = str(Path(__file__).parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 
 import asyncio
 from collections import deque

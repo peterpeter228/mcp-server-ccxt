@@ -19,7 +19,7 @@ SSE (Server-Sent Events) 适合需要实时数据推送的场景。
 4. 填写配置：
    - **名称**: `Crypto Orderflow`
    - **类型**: `SSE`
-   - **URL**: `http://localhost:8000/sse`
+   - **URL**: `http://localhost:8022/sse`
 
 ### 方法二：Streamable HTTP
 
@@ -31,7 +31,7 @@ Streamable HTTP 适合按需查询的场景，是推荐的连接方式。
 4. 填写配置：
    - **名称**: `Crypto Orderflow`
    - **类型**: `Streamable HTTP`
-   - **URL**: `http://localhost:8000/mcp`
+   - **URL**: `http://localhost:8022/mcp`
 
 ## JSON 配置示例
 
@@ -42,7 +42,7 @@ Streamable HTTP 适合按需查询的场景，是推荐的连接方式。
   "mcpServers": {
     "crypto-orderflow": {
       "type": "streamableHttp",
-      "url": "http://localhost:8000/mcp",
+      "url": "http://localhost:8022/mcp",
       "name": "Crypto Orderflow",
       "description": "加密货币行情和订单流指标服务"
     }
@@ -59,7 +59,7 @@ Streamable HTTP 适合按需查询的场景，是推荐的连接方式。
   "mcpServers": {
     "crypto-orderflow": {
       "type": "streamableHttp",
-      "url": "http://your-server-ip:8000/mcp"
+      "url": "http://your-server-ip:8022/mcp"
     }
   }
 }
@@ -129,7 +129,7 @@ Streamable HTTP 适合按需查询的场景，是推荐的连接方式。
 ## 故障排除
 
 ### 连接失败
-1. 检查服务器是否运行：`curl http://localhost:8000/healthz`
+1. 检查服务器是否运行：`curl http://localhost:8022/healthz`
 2. 检查防火墙设置
 3. 检查网络连接
 
@@ -156,7 +156,7 @@ server {
     ssl_certificate_key /path/to/key.pem;
     
     location /mcp {
-        proxy_pass http://127.0.0.1:8000/mcp;
+        proxy_pass http://127.0.0.1:8022/mcp;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -164,7 +164,7 @@ server {
     }
     
     location /sse {
-        proxy_pass http://127.0.0.1:8000/sse;
+        proxy_pass http://127.0.0.1:8022/sse;
         proxy_http_version 1.1;
         proxy_set_header Connection '';
         proxy_buffering off;

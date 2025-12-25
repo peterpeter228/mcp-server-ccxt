@@ -4,40 +4,48 @@ MCP Server implementation with SSE and Streamable HTTP support.
 
 import asyncio
 import json
+import os
+import sys
 from collections import deque
 from dataclasses import dataclass, field
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Deque
 
+# Ensure imports work
+_project_root = str(Path(__file__).parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 from starlette.applications import Starlette
-from starlette.routing import Route, Mount
+from starlette.routing import Route
 from starlette.responses import JSONResponse, Response
 from starlette.requests import Request
 from sse_starlette.sse import EventSourceResponse
 import uvicorn
 
 from src.config import get_config
-from src.utils import get_logger, setup_logging, get_utc_now_ms
-from src.data import BinanceRestClient, BinanceWebSocketClient, OrderbookManager, TradeAggregator, AggregatedTrade
-from src.data.binance_ws import StreamType, BinanceAllMarketsWebSocket
-from src.indicators import (
-    VWAPCalculator,
-    VolumeProfileCalculator,
-    SessionLevelCalculator,
-    FootprintCalculator,
-    DeltaCVDCalculator,
-    ImbalanceDetector,
-    DepthDeltaCalculator,
-)
-from src.storage import SQLiteStore, DataCache
-from src.tools import (
-    get_market_snapshot,
-    get_key_levels,
-    get_footprint,
-    get_orderflow_metrics,
-    get_orderbook_depth_delta,
-    stream_liquidations,
-)
+from src.utils.logging import get_logger, setup_logging
+from src.utils.time_utils import get_utc_now_ms
+from src.data.binance_rest import BinanceRestClient
+from src.data.binance_ws import BinanceWebSocketClient, StreamType, BinanceAllMarketsWebSocket
+from src.data.orderbook import OrderbookManager
+from src.data.trade_aggregator import TradeAggregator, AggregatedTrade
+from src.indicators.vwap import VWAPCalculator
+from src.indicators.volume_profile import VolumeProfileCalculator
+from src.indicators.session_levels import SessionLevelCalculator
+from src.indicators.footprint import FootprintCalculator
+from src.indicators.delta_cvd import DeltaCVDCalculator
+from src.indicators.imbalance import ImbalanceDetector
+from src.indicators.depth_delta import DepthDeltaCalculator
+from src.storage.sqlite_store import SQLiteStore
+from src.storage.cache import DataCache
+from src.tools.market_snapshot import get_market_snapshot
+from src.tools.key_levels import get_key_levels
+from src.tools.footprint import get_footprint
+from src.tools.orderflow_metrics import get_orderflow_metrics
+from src.tools.depth_delta import get_orderbook_depth_delta
+from src.tools.liquidations import stream_liquidations
 
 logger = get_logger(__name__)
 
@@ -417,7 +425,7 @@ class CryptoMCPServer:
                 return JSONResponse(
                     {
                         "jsonrpc": "2.0",
-                        "id": body.get("id") if "body" in dir() else None,
+                        "id": None,
                         "error": {"code": -32603, "message": str(e)},
                     },
                     status_code=500,
@@ -550,13 +558,13 @@ class CryptoMCPServer:
         return [
             {
                 "name": "get_market_snapshot",
-                "description": "Get market snapshot including price, volume, funding, and OI",
+                "description": "获取市场快照，包含价格、成交量、资金费率和持仓量",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "symbol": {
                             "type": "string",
-                            "description": "Trading pair symbol (e.g., BTCUSDT)",
+                            "description": "交易对，如 BTCUSDT、ETHUSDT",
                         },
                     },
                     "required": ["symbol"],
@@ -564,67 +572,67 @@ class CryptoMCPServer:
             },
             {
                 "name": "get_key_levels",
-                "description": "Get key levels: VWAP, Volume Profile (POC/VAH/VAL), Session H/L",
+                "description": "获取关键价位：VWAP、Volume Profile (POC/VAH/VAL)、Session H/L",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "symbol": {"type": "string"},
-                        "date": {"type": "string", "description": "Date (YYYY-MM-DD), defaults to today"},
-                        "sessionTZ": {"type": "string", "description": "Session timezone, defaults to UTC"},
+                        "symbol": {"type": "string", "description": "交易对"},
+                        "date": {"type": "string", "description": "日期 (YYYY-MM-DD)，默认今天"},
+                        "sessionTZ": {"type": "string", "description": "会话时区，默认 UTC"},
                     },
                     "required": ["symbol"],
                 },
             },
             {
                 "name": "get_footprint",
-                "description": "Get footprint bars with volume by price level",
+                "description": "获取 Footprint 柱状图，显示每个价位的买卖成交量",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "symbol": {"type": "string"},
-                        "timeframe": {"type": "string", "description": "1m, 5m, 15m, 30m, 1h"},
-                        "startTime": {"type": "integer", "description": "Start time (ms)"},
-                        "endTime": {"type": "integer", "description": "End time (ms)"},
+                        "symbol": {"type": "string", "description": "交易对"},
+                        "timeframe": {"type": "string", "description": "时间周期: 1m, 5m, 15m, 30m, 1h"},
+                        "startTime": {"type": "integer", "description": "开始时间 (毫秒时间戳)"},
+                        "endTime": {"type": "integer", "description": "结束时间 (毫秒时间戳)"},
                     },
                     "required": ["symbol", "timeframe"],
                 },
             },
             {
                 "name": "get_orderflow_metrics",
-                "description": "Get orderflow metrics: delta, CVD, imbalances",
+                "description": "获取订单流指标：Delta、CVD、Stacked Imbalance",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "symbol": {"type": "string"},
-                        "timeframe": {"type": "string"},
-                        "startTime": {"type": "integer"},
-                        "endTime": {"type": "integer"},
+                        "symbol": {"type": "string", "description": "交易对"},
+                        "timeframe": {"type": "string", "description": "时间周期"},
+                        "startTime": {"type": "integer", "description": "开始时间"},
+                        "endTime": {"type": "integer", "description": "结束时间"},
                     },
                     "required": ["symbol", "timeframe"],
                 },
             },
             {
                 "name": "get_orderbook_depth_delta",
-                "description": "Get orderbook depth delta within price range",
+                "description": "获取订单簿深度变化，监控买卖挂单变化",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "symbol": {"type": "string"},
-                        "percent": {"type": "number", "description": "Price range % (default 1.0)"},
-                        "windowSec": {"type": "integer", "description": "Sample interval (default 5)"},
-                        "lookback": {"type": "integer", "description": "Number of samples (default 100)"},
+                        "symbol": {"type": "string", "description": "交易对"},
+                        "percent": {"type": "number", "description": "价格范围百分比 (默认 1.0)"},
+                        "windowSec": {"type": "integer", "description": "采样间隔秒 (默认 5)"},
+                        "lookback": {"type": "integer", "description": "历史条数 (默认 100)"},
                     },
                     "required": ["symbol"],
                 },
             },
             {
                 "name": "stream_liquidations",
-                "description": "Get recent liquidation events",
+                "description": "获取最近的清算事件",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "symbol": {"type": "string"},
-                        "limit": {"type": "integer", "description": "Max events (default 100)"},
+                        "symbol": {"type": "string", "description": "交易对"},
+                        "limit": {"type": "integer", "description": "返回条数 (默认 100)"},
                     },
                     "required": ["symbol"],
                 },
