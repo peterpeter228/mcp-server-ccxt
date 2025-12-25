@@ -42,17 +42,17 @@ RUN mkdir -p /app/data && chown -R appuser:appuser /app
 USER appuser
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8022
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/healthz || exit 1
+    CMD curl -f http://localhost:8022/healthz || exit 1
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
-    PORT=8000 \
+    PORT=8022 \
     LOG_LEVEL=INFO \
     LOG_FORMAT=json \
     CACHE_DB_PATH=/app/data/orderflow_cache.db

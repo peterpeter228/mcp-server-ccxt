@@ -8,7 +8,7 @@ services:
     container_name: crypto-orderflow-mcp
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8022:8022"
     environment:
       # Binance API Configuration
       - BINANCE_REST_URL=https://fapi.binance.com
@@ -19,7 +19,7 @@ services:
       
       # Server Configuration
       - HOST=0.0.0.0
-      - PORT=8000
+      - PORT=8022
       
       # Database Configuration
       - CACHE_DB_PATH=/app/data/orderflow_cache.db
@@ -56,7 +56,7 @@ services:
       - crypto-mcp-data:/app/data
     
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      test: ["CMD", "curl", "-f", "http://localhost:8022/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
