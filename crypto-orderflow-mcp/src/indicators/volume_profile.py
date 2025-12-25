@@ -1,31 +1,21 @@
 """
-
-import sys
-from pathlib import Path
-
-_project_root = str(Path(__file__).parent.parent.parent)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
 Volume Profile calculator.
 Calculates POC (Point of Control), VAH (Value Area High), VAL (Value Area Low).
 """
 
 import sys
 from pathlib import Path
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Any
 
 _project_root = str(Path(__file__).parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-
-from dataclasses import dataclass, field
-from decimal import Decimal
-from typing import Any
-
 from src.data.trade_aggregator import AggregatedTrade
-from src.utils import (
-    get_logger,
+from src.utils.logging import get_logger
+from src.utils.time_utils import (
     get_utc_now_ms,
     get_day_start_ms,
     get_previous_day_start_ms,
@@ -43,12 +33,10 @@ class VolumeProfile:
     start_time: int
     end_time: int
     tick_size: Decimal
-    value_area_percent: int = 70  # Usually 70%
+    value_area_percent: int = 70
     
-    # Price levels: price -> total volume
     levels: dict[Decimal, Decimal] = field(default_factory=dict)
     
-    # Calculated values
     poc: Decimal | None = None
     vah: Decimal | None = None
     val: Decimal | None = None
@@ -63,12 +51,7 @@ class VolumeProfile:
         return (price / self.tick_size).quantize(Decimal("1")) * self.tick_size
     
     def add_trade(self, trade: AggregatedTrade) -> None:
-        """
-        Add a trade to volume profile.
-        
-        Args:
-            trade: Trade to add
-        """
+        """Add a trade to volume profile."""
         tick_price = self._price_to_tick(trade.price)
         
         if tick_price not in self.levels:
@@ -81,7 +64,6 @@ class VolumeProfile:
         self.low = min(self.low, trade.price)
         self.end_time = max(self.end_time, trade.timestamp)
         
-        # Invalidate calculated values (will be recalculated on access)
         self.poc = None
         self.vah = None
         self.val = None
@@ -91,47 +73,33 @@ class VolumeProfile:
         if not self.levels:
             return
         
-        # Find POC (price with highest volume)
         self.poc = max(self.levels.keys(), key=lambda p: self.levels[p])
-        
-        # Calculate Value Area
         self._calculate_value_area()
     
     def _calculate_value_area(self) -> None:
-        """
-        Calculate Value Area High and Low.
-        
-        Value Area contains X% (default 70%) of total volume,
-        expanding from POC in both directions.
-        """
+        """Calculate Value Area High and Low."""
         if not self.levels or self.poc is None:
             return
         
         target_volume = self.total_volume * Decimal(str(self.value_area_percent / 100))
         
-        # Sort price levels
         sorted_prices = sorted(self.levels.keys())
         poc_index = sorted_prices.index(self.poc)
         
-        # Start from POC
         value_area_volume = self.levels[self.poc]
         low_index = poc_index
         high_index = poc_index
         
-        # Expand outward from POC
         while value_area_volume < target_volume:
-            # Calculate volume at next price above and below
             can_go_up = high_index < len(sorted_prices) - 1
             can_go_down = low_index > 0
             
             if not can_go_up and not can_go_down:
                 break
             
-            # Get volumes for potential expansion
             up_vol = Decimal(0)
             down_vol = Decimal(0)
             
-            # Look up to 2 levels in each direction (as per TPO profile methodology)
             if can_go_up:
                 for i in range(1, 3):
                     if high_index + i < len(sorted_prices):
@@ -142,9 +110,7 @@ class VolumeProfile:
                     if low_index - i >= 0:
                         down_vol += self.levels[sorted_prices[low_index - i]]
             
-            # Expand in direction with more volume
             if up_vol >= down_vol and can_go_up:
-                # Expand up
                 for i in range(1, 3):
                     if high_index + i < len(sorted_prices):
                         high_index += 1
@@ -152,7 +118,6 @@ class VolumeProfile:
                         if value_area_volume >= target_volume:
                             break
             elif can_go_down:
-                # Expand down
                 for i in range(1, 3):
                     if low_index - i >= 0:
                         low_index -= 1
@@ -166,7 +131,7 @@ class VolumeProfile:
         self.vah = sorted_prices[high_index]
     
     def get_poc(self) -> Decimal | None:
-        """Get Point of Control (highest volume price)."""
+        """Get Point of Control."""
         if self.poc is None:
             self.calculate()
         return self.poc
@@ -212,9 +177,7 @@ class VolumeProfile:
 
 @dataclass
 class VolumeProfileCalculator:
-    """
-    Calculator for developing and previous day Volume Profiles.
-    """
+    """Calculator for developing and previous day Volume Profiles."""
     
     symbol: str
     tick_size: Decimal = Decimal("0.1")
@@ -233,9 +196,7 @@ class VolumeProfileCalculator:
         new_day_start = self._get_current_day_start()
         
         if self._current_day_start != new_day_start:
-            # Day has changed
             if self._current_day_profile is not None:
-                # Move current to previous
                 self._previous_day_profile = self._current_day_profile
                 logger.info(
                     "Volume profile day rollover",
@@ -243,7 +204,6 @@ class VolumeProfileCalculator:
                     previous_poc=str(self._previous_day_profile.get_poc()),
                 )
             
-            # Reset current day
             self._current_day_profile = None
             self._current_day_start = new_day_start
     
@@ -251,12 +211,10 @@ class VolumeProfileCalculator:
         """Add a trade to volume profile."""
         self._check_day_rollover()
         
-        # Check if trade belongs to current day
         trade_day_start = get_day_start_ms(ms_to_datetime(trade.timestamp))
         if trade_day_start != self._current_day_start:
             return
         
-        # Create profile if needed
         if self._current_day_profile is None:
             self._current_day_profile = VolumeProfile(
                 symbol=self.symbol,
@@ -291,10 +249,7 @@ class VolumeProfileCalculator:
         current_day_trades: list[AggregatedTrade],
         previous_day_trades: list[AggregatedTrade] | None = None,
     ) -> None:
-        """
-        Initialize profiles from historical trades.
-        """
-        # Calculate previous day profile if provided
+        """Initialize profiles from historical trades."""
         if previous_day_trades:
             prev_start = get_previous_day_start_ms()
             prev_profile = VolumeProfile(
@@ -319,7 +274,6 @@ class VolumeProfileCalculator:
                 val=str(prev_profile.get_val()),
             )
         
-        # Initialize current day
         self._current_day_start = self._get_current_day_start()
         for trade in current_day_trades:
             self.add_trade(trade)
@@ -334,12 +288,7 @@ class VolumeProfileCalculator:
             )
     
     def get_levels(self) -> dict:
-        """
-        Get all volume profile levels.
-        
-        Returns:
-            Dict with current and previous day POC/VAH/VAL
-        """
+        """Get all volume profile levels."""
         result = {
             "symbol": self.symbol,
             "timestamp": get_utc_now_ms(),

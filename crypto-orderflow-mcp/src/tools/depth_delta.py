@@ -1,99 +1,85 @@
 """
-
-import sys
-from pathlib import Path
-
-_project_root = str(Path(__file__).parent.parent.parent)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
 get_orderbook_depth_delta tool implementation.
 Returns orderbook depth delta within price range.
 """
 
 import sys
 from pathlib import Path
+from typing import Any
 
 _project_root = str(Path(__file__).parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-
-from typing import Any
-
-from src.indicators import DepthDeltaCalculator
-from src.data import OrderbookManager
-from src.utils import get_logger, get_utc_now_ms
+from src.utils.logging import get_logger
+from src.utils.time_utils import get_utc_now_ms
 
 logger = get_logger(__name__)
 
 
 async def get_orderbook_depth_delta(
     symbol: str,
-    percent: float,
-    window_sec: int,
-    lookback: int,
-    depth_delta_calc: DepthDeltaCalculator | None,
-    orderbook_manager: OrderbookManager | None,
+    depth_delta_calculator: Any,
+    percent: float = 1.0,
+    window_sec: int = 5,
+    lookback: int = 60,
 ) -> dict:
     """
-    Get orderbook depth delta for a symbol.
+    Get orderbook depth delta data.
+    
+    Args:
+        symbol: Trading pair symbol
+        depth_delta_calculator: DepthDeltaCalculator instance
+        percent: Price range percent from mid (e.g., 1.0 = ±1%)
+        window_sec: Snapshot interval in seconds
+        lookback: Number of snapshots to return
     
     Returns:
-        {
-            "timestamp": int,
-            "symbol": str,
-            "exchange": "binance",
-            "marketType": "linear perpetual",
-            "percentRange": float,
-            "current": {...},
-            "history": [...],
-            "summary": {...}
-        }
+        Depth delta data showing changes in orderbook over time
     """
     result = {
-        "timestamp": get_utc_now_ms(),
         "symbol": symbol,
         "exchange": "binance",
-        "marketType": "linear perpetual",
+        "marketType": "linear_perpetual",
+        "timestamp": get_utc_now_ms(),
         "percentRange": percent,
         "windowSec": window_sec,
     }
     
-    # Get current depth
-    if depth_delta_calc:
-        current = depth_delta_calc.get_current_depth(symbol)
-        result["current"] = current
+    try:
+        current_depth = depth_delta_calculator.get_current_depth()
+        result["currentDepth"] = current_depth
         
-        # Get history
-        history = depth_delta_calc.get_depth_history(symbol, lookback)
-        result["history"] = history
-        
-        # Get delta history
-        delta_history = depth_delta_calc.get_delta_history(symbol, lookback)
-        result["deltaHistory"] = delta_history
-        
-        # Get summary
-        summary = depth_delta_calc.get_depth_delta_summary(symbol, lookback)
-        result["summary"] = summary
-    else:
-        result["current"] = None
-        result["history"] = []
-        result["deltaHistory"] = []
-        result["summary"] = None
+    except Exception as e:
+        logger.error("Error getting current depth", symbol=symbol, error=str(e))
+        result["currentDepth"] = None
     
-    # Get current orderbook snapshot
-    if orderbook_manager:
-        orderbook = orderbook_manager.get_orderbook(symbol)
-        if orderbook:
-            result["orderbook"] = {
-                "isSynced": orderbook.is_synced,
-                "lastUpdateId": orderbook.last_update_id,
-                "lastUpdateTime": orderbook.last_update_time,
-                "bestBid": [str(x) for x in orderbook.get_best_bid()] if orderbook.get_best_bid() else None,
-                "bestAsk": [str(x) for x in orderbook.get_best_ask()] if orderbook.get_best_ask() else None,
-                "midPrice": str(orderbook.get_mid_price()) if orderbook.get_mid_price() else None,
-                "spread": str(orderbook.get_spread()) if orderbook.get_spread() else None,
-            }
+    try:
+        history = depth_delta_calculator.get_depth_history(limit=lookback)
+        result["depthHistory"] = history
+        result["historyCount"] = len(history)
+        
+    except Exception as e:
+        logger.error("Error getting depth history", symbol=symbol, error=str(e))
+        result["depthHistory"] = []
+        result["historyCount"] = 0
+    
+    try:
+        deltas = depth_delta_calculator.get_delta_history(limit=lookback)
+        result["deltaHistory"] = deltas
+        result["deltaCount"] = len(deltas)
+        
+    except Exception as e:
+        logger.error("Error getting delta history", symbol=symbol, error=str(e))
+        result["deltaHistory"] = []
+        result["deltaCount"] = 0
+    
+    try:
+        summary = depth_delta_calculator.get_summary(lookback_sec=lookback * window_sec)
+        result["summary"] = summary
+        
+    except Exception as e:
+        logger.error("Error getting depth summary", symbol=symbol, error=str(e))
+        result["summary"] = None
     
     return result

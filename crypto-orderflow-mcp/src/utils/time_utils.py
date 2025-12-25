@@ -4,7 +4,10 @@ All times are handled in UTC unless otherwise specified.
 """
 
 from datetime import datetime, time, timedelta, timezone
-from typing import Tuple
+from typing import Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.config import SessionConfig
 
 
 def get_utc_now() -> datetime:
@@ -221,3 +224,63 @@ def get_timeframe_range(
         current = period_end
     
     return periods
+
+
+def get_session_start_end(
+    session: "SessionConfig",
+    reference_time_ms: int | None = None,
+) -> Tuple[int, int]:
+    """
+    Get session start and end timestamps for the session containing the reference time.
+    
+    Args:
+        session: SessionConfig with start/end time objects or start_hour/start_minute etc.
+        reference_time_ms: Reference timestamp in ms. If None, uses current UTC time.
+        
+    Returns:
+        Tuple of (start_ms, end_ms) timestamps.
+    """
+    if reference_time_ms is None:
+        ref_dt = get_utc_now()
+    else:
+        ref_dt = ms_to_datetime(reference_time_ms)
+    
+    # Handle SessionConfig with start/end time objects or hour/minute attributes
+    if hasattr(session, 'start') and isinstance(session.start, time):
+        session_start = session.start
+        session_end = session.end
+        start_hour, start_minute = session_start.hour, session_start.minute
+        end_hour, end_minute = session_end.hour, session_end.minute
+    else:
+        session_start = time(session.start_hour, session.start_minute)
+        session_end = time(session.end_hour, session.end_minute)
+        start_hour, start_minute = session.start_hour, session.start_minute
+        end_hour, end_minute = session.end_hour, session.end_minute
+    
+    # Get today's session bounds
+    today_start_dt = ref_dt.replace(
+        hour=start_hour,
+        minute=start_minute,
+        second=0,
+        microsecond=0,
+    )
+    today_end_dt = ref_dt.replace(
+        hour=end_hour,
+        minute=end_minute,
+        second=0,
+        microsecond=0,
+    )
+    
+    # Handle sessions that cross midnight
+    if session_end < session_start:
+        today_end_dt = today_end_dt + timedelta(days=1)
+    
+    start_ms = datetime_to_ms(today_start_dt)
+    end_ms = datetime_to_ms(today_end_dt)
+    
+    # If reference time is before today's session, use yesterday's session
+    if reference_time_ms is not None and reference_time_ms < start_ms:
+        start_ms -= 24 * 60 * 60 * 1000
+        end_ms -= 24 * 60 * 60 * 1000
+    
+    return start_ms, end_ms

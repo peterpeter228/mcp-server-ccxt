@@ -1,348 +1,219 @@
 """
-
-import sys
-from pathlib import Path
-
-_project_root = str(Path(__file__).parent.parent.parent)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
 Session high/low level calculator.
 Tracks highs and lows for Tokyo, London, and New York trading sessions.
 """
 
 import sys
 from pathlib import Path
-
-_project_root = str(Path(__file__).parent.parent.parent)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
-
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from src.config import SessionConfig, get_config
+_project_root = str(Path(__file__).parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from src.config import Config, SessionConfig
 from src.data.trade_aggregator import AggregatedTrade
-from src.utils import (
-    get_logger,
-    get_utc_now,
+from src.utils.logging import get_logger
+from src.utils.time_utils import (
     get_utc_now_ms,
+    get_session_start_end,
     ms_to_datetime,
-    is_time_in_session,
-    get_session_bounds_for_day,
 )
 
 logger = get_logger(__name__)
 
 
 @dataclass
-class SessionLevels:
-    """High/Low levels for a single session."""
+class SessionLevel:
+    """Session high/low data."""
     
-    name: str
-    date: datetime
-    start_time: int  # ms
-    end_time: int  # ms
+    session_name: str
     high: Decimal | None = None
     low: Decimal | None = None
-    is_complete: bool = False
+    high_time: int | None = None
+    low_time: int | None = None
+    start_time: int = 0
+    end_time: int = 0
+    is_active: bool = False
     trade_count: int = 0
     
-    def add_trade(self, trade: AggregatedTrade) -> None:
-        """Update levels with a trade."""
-        if self.high is None or trade.price > self.high:
-            self.high = trade.price
-        if self.low is None or trade.price < self.low:
-            self.low = trade.price
+    def update(self, price: Decimal, timestamp: int) -> None:
+        """Update high/low with new price."""
+        if self.high is None or price > self.high:
+            self.high = price
+            self.high_time = timestamp
+        if self.low is None or price < self.low:
+            self.low = price
+            self.low_time = timestamp
         self.trade_count += 1
     
     def to_dict(self) -> dict:
+        """Convert to dictionary."""
         return {
-            "name": self.name,
-            "date": self.date.strftime("%Y-%m-%d"),
-            "startTime": self.start_time,
-            "endTime": self.end_time,
+            "sessionName": self.session_name,
             "high": str(self.high) if self.high else None,
             "low": str(self.low) if self.low else None,
-            "isComplete": self.is_complete,
+            "highTime": self.high_time,
+            "lowTime": self.low_time,
+            "startTime": self.start_time,
+            "endTime": self.end_time,
+            "isActive": self.is_active,
             "tradeCount": self.trade_count,
         }
 
 
 @dataclass
 class SessionLevelCalculator:
-    """
-    Calculator for session high/low levels.
-    
-    Tracks Tokyo, London, and New York session highs and lows.
-    Sessions are defined by UTC time ranges.
-    """
+    """Calculator for session high/low levels."""
     
     symbol: str
-    sessions: list[SessionConfig] = field(default_factory=list)
+    sessions: dict[str, SessionConfig] = field(default_factory=dict)
     
-    # Current sessions (today)
-    _current_sessions: dict[str, SessionLevels] = field(default_factory=dict)
-    # Yesterday's completed sessions
-    _previous_sessions: dict[str, SessionLevels] = field(default_factory=dict)
-    
-    _current_date: datetime | None = field(default=None, init=False)
+    _current_sessions: dict[str, SessionLevel] = field(default_factory=dict, init=False)
+    _previous_sessions: dict[str, SessionLevel] = field(default_factory=dict, init=False)
     
     def __post_init__(self) -> None:
-        """Initialize sessions from config if not provided."""
+        """Initialize default sessions if not provided."""
         if not self.sessions:
-            self.sessions = get_config().sessions
+            config = Config()
+            self.sessions = {
+                "tokyo": config.tokyo_session,
+                "london": config.london_session,
+                "newyork": config.newyork_session,
+            }
     
-    def _get_current_date(self) -> datetime:
-        """Get current UTC date."""
-        return get_utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    def _check_day_rollover(self) -> None:
-        """Check if we've rolled over to a new day."""
-        new_date = self._get_current_date()
+    def _is_in_session(self, timestamp: int, session: SessionConfig) -> bool:
+        """Check if timestamp is within session time."""
+        dt = ms_to_datetime(timestamp)
+        current_time = dt.time()
         
-        if self._current_date != new_date:
-            if self._current_date is not None:
-                # Move current sessions to previous (mark as complete)
-                for name, session in self._current_sessions.items():
-                    session.is_complete = True
-                    self._previous_sessions[name] = session
-            
-            # Create new sessions for today
-            self._current_sessions.clear()
-            for session_config in self.sessions:
-                start_ms, end_ms = get_session_bounds_for_day(
-                    new_date,
-                    session_config.start,
-                    session_config.end,
-                )
-                self._current_sessions[session_config.name] = SessionLevels(
-                    name=session_config.name,
-                    date=new_date,
-                    start_time=start_ms,
-                    end_time=end_ms,
-                )
-            
-            self._current_date = new_date
-            logger.info(
-                "Session levels day rollover",
-                symbol=self.symbol,
-                date=new_date.strftime("%Y-%m-%d"),
-            )
+        # SessionConfig can have either start/end (time objects) or start_hour/start_minute etc.
+        if hasattr(session, 'start') and isinstance(session.start, time):
+            start_time = session.start
+            end_time = session.end
+        else:
+            start_time = time(session.start_hour, session.start_minute)
+            end_time = time(session.end_hour, session.end_minute)
+        
+        if start_time <= end_time:
+            return start_time <= current_time < end_time
+        else:
+            return current_time >= start_time or current_time < end_time
     
-    def _is_trade_in_session(
-        self,
-        trade: AggregatedTrade,
-        session_config: SessionConfig,
-    ) -> bool:
-        """Check if trade falls within a session's time range."""
-        trade_dt = ms_to_datetime(trade.timestamp)
-        return is_time_in_session(
-            trade_dt,
-            session_config.start,
-            session_config.end,
-        )
+    def _get_session_bounds(self, session_name: str, reference_time: int | None = None) -> tuple[int, int]:
+        """Get session start/end times for today."""
+        session = self.sessions.get(session_name)
+        if not session:
+            return 0, 0
+        
+        return get_session_start_end(session, reference_time)
     
     def add_trade(self, trade: AggregatedTrade) -> None:
-        """
-        Add a trade and update relevant session levels.
-        
-        Args:
-            trade: Trade to process
-        """
-        self._check_day_rollover()
-        
-        trade_dt = ms_to_datetime(trade.timestamp)
-        trade_date = trade_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        # Only process trades from today
-        if trade_date != self._current_date:
-            return
-        
-        # Check each session
-        for session_config in self.sessions:
-            if self._is_trade_in_session(trade, session_config):
-                session = self._current_sessions.get(session_config.name)
-                if session and not session.is_complete:
-                    session.add_trade(trade)
+        """Add a trade to session level tracking."""
+        for name, session in self.sessions.items():
+            start_ms, end_ms = self._get_session_bounds(name, trade.timestamp)
+            
+            if start_ms <= trade.timestamp < end_ms:
+                if name not in self._current_sessions:
+                    self._current_sessions[name] = SessionLevel(
+                        session_name=name,
+                        start_time=start_ms,
+                        end_time=end_ms,
+                        is_active=True,
+                    )
+                
+                level = self._current_sessions[name]
+                
+                if level.start_time != start_ms:
+                    if name in self._current_sessions:
+                        self._previous_sessions[name] = self._current_sessions[name]
+                        self._previous_sessions[name].is_active = False
+                    
+                    self._current_sessions[name] = SessionLevel(
+                        session_name=name,
+                        start_time=start_ms,
+                        end_time=end_ms,
+                        is_active=True,
+                    )
+                    level = self._current_sessions[name]
+                
+                level.update(trade.price, trade.timestamp)
     
     def add_trades(self, trades: list[AggregatedTrade]) -> None:
         """Add multiple trades."""
         for trade in trades:
             self.add_trade(trade)
     
-    def check_session_completions(self) -> None:
-        """Mark sessions as complete if their time has passed."""
+    def check_session_status(self) -> None:
+        """Update active status of current sessions."""
         now_ms = get_utc_now_ms()
         
-        for session in self._current_sessions.values():
-            if not session.is_complete and now_ms > session.end_time:
-                session.is_complete = True
-                logger.info(
-                    "Session completed",
-                    symbol=self.symbol,
-                    session=session.name,
-                    high=str(session.high),
-                    low=str(session.low),
-                )
+        for name, level in self._current_sessions.items():
+            session = self.sessions.get(name)
+            if session:
+                is_active = self._is_in_session(now_ms, session)
+                
+                if level.is_active and not is_active:
+                    self._previous_sessions[name] = level
+                    level.is_active = False
+                    logger.info(
+                        "Session ended",
+                        session=name,
+                        symbol=self.symbol,
+                        high=str(level.high),
+                        low=str(level.low),
+                    )
     
-    def get_session(self, name: str, previous: bool = False) -> SessionLevels | None:
-        """
-        Get session levels by name.
-        
-        Args:
-            name: Session name (Tokyo, London, NY)
-            previous: If True, get previous day's session
-            
-        Returns:
-            SessionLevels or None
-        """
-        sessions = self._previous_sessions if previous else self._current_sessions
-        return sessions.get(name)
+    def get_current_session(self, session_name: str) -> SessionLevel | None:
+        """Get current session level."""
+        return self._current_sessions.get(session_name)
     
-    def get_all_sessions(self) -> dict:
-        """
-        Get all session levels (current and previous).
-        
-        Returns:
-            Dict with current and previous session data
-        """
-        self._check_day_rollover()
-        self.check_session_completions()
+    def get_previous_session(self, session_name: str) -> SessionLevel | None:
+        """Get previous session level."""
+        return self._previous_sessions.get(session_name)
+    
+    def get_all_levels(self) -> dict:
+        """Get all session levels."""
+        self.check_session_status()
         
         result = {
             "symbol": self.symbol,
             "timestamp": get_utc_now_ms(),
-            "currentDate": self._current_date.strftime("%Y-%m-%d") if self._current_date else None,
-            "current": {},
-            "previous": {},
+            "sessions": {},
         }
         
-        for name, session in self._current_sessions.items():
-            result["current"][name] = session.to_dict()
-        
-        for name, session in self._previous_sessions.items():
-            result["previous"][name] = session.to_dict()
+        for name in self.sessions.keys():
+            current = self._current_sessions.get(name)
+            previous = self._previous_sessions.get(name)
+            
+            session_data = {
+                "current": current.to_dict() if current else None,
+                "previous": previous.to_dict() if previous else None,
+            }
+            
+            if current:
+                result[f"{name}H"] = str(current.high) if current.high else None
+                result[f"{name}L"] = str(current.low) if current.low else None
+            
+            result["sessions"][name] = session_data
         
         return result
     
-    def get_levels_flat(self) -> dict:
-        """
-        Get session levels in a flat format for easy access.
+    def initialize_from_trades(self, trades: list[AggregatedTrade]) -> None:
+        """Initialize session levels from historical trades."""
+        sorted_trades = sorted(trades, key=lambda t: t.timestamp)
         
-        Returns:
-            Dict with TokyoH/L, LondonH/L, NYH/L keys
-        """
-        self._check_day_rollover()
-        self.check_session_completions()
-        
-        result = {
-            "symbol": self.symbol,
-            "timestamp": get_utc_now_ms(),
-        }
-        
-        # Current sessions
-        for name in ["Tokyo", "London", "NY"]:
-            session = self._current_sessions.get(name)
-            if session:
-                result[f"{name}H"] = str(session.high) if session.high else None
-                result[f"{name}L"] = str(session.low) if session.low else None
-                result[f"{name}Complete"] = session.is_complete
-            else:
-                result[f"{name}H"] = None
-                result[f"{name}L"] = None
-                result[f"{name}Complete"] = False
-        
-        # Previous sessions (prefixed with 'p')
-        for name in ["Tokyo", "London", "NY"]:
-            session = self._previous_sessions.get(name)
-            if session:
-                result[f"p{name}H"] = str(session.high) if session.high else None
-                result[f"p{name}L"] = str(session.low) if session.low else None
-            else:
-                result[f"p{name}H"] = None
-                result[f"p{name}L"] = None
-        
-        return result
-    
-    def initialize_from_trades(
-        self,
-        current_day_trades: list[AggregatedTrade],
-        previous_day_trades: list[AggregatedTrade] | None = None,
-    ) -> None:
-        """
-        Initialize session levels from historical trades.
-        
-        Args:
-            current_day_trades: Today's trades
-            previous_day_trades: Yesterday's trades (optional)
-        """
-        # Initialize current date
-        self._current_date = self._get_current_date()
-        
-        # Create current sessions
-        for session_config in self.sessions:
-            start_ms, end_ms = get_session_bounds_for_day(
-                self._current_date,
-                session_config.start,
-                session_config.end,
-            )
-            self._current_sessions[session_config.name] = SessionLevels(
-                name=session_config.name,
-                date=self._current_date,
-                start_time=start_ms,
-                end_time=end_ms,
-            )
-        
-        # Process previous day trades
-        if previous_day_trades:
-            prev_date = self._current_date - timedelta(days=1)
-            
-            # Create previous sessions
-            for session_config in self.sessions:
-                start_ms, end_ms = get_session_bounds_for_day(
-                    prev_date,
-                    session_config.start,
-                    session_config.end,
-                )
-                self._previous_sessions[session_config.name] = SessionLevels(
-                    name=session_config.name,
-                    date=prev_date,
-                    start_time=start_ms,
-                    end_time=end_ms,
-                    is_complete=True,
-                )
-            
-            # Add trades to previous sessions
-            for trade in previous_day_trades:
-                trade_dt = ms_to_datetime(trade.timestamp)
-                for session_config in self.sessions:
-                    if is_time_in_session(trade_dt, session_config.start, session_config.end):
-                        session = self._previous_sessions.get(session_config.name)
-                        if session:
-                            session.add_trade(trade)
-            
-            logger.info(
-                "Initialized previous day session levels",
-                symbol=self.symbol,
-                sessions={
-                    name: {"high": str(s.high), "low": str(s.low)}
-                    for name, s in self._previous_sessions.items()
-                },
-            )
-        
-        # Process current day trades
-        for trade in current_day_trades:
+        for trade in sorted_trades:
             self.add_trade(trade)
         
+        self.check_session_status()
+        
         logger.info(
-            "Initialized current day session levels",
+            "Initialized session levels",
             symbol=self.symbol,
-            sessions={
-                name: {"high": str(s.high), "low": str(s.low)}
-                for name, s in self._current_sessions.items()
-            },
+            current_sessions=list(self._current_sessions.keys()),
+            previous_sessions=list(self._previous_sessions.keys()),
         )

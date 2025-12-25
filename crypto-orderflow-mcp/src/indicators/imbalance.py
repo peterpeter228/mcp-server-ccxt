@@ -1,303 +1,184 @@
 """
-
-import sys
-from pathlib import Path
-
-_project_root = str(Path(__file__).parent.parent.parent)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
 Stacked Imbalance detector.
 Identifies areas where buy/sell imbalances stack at consecutive price levels.
 """
 
 import sys
 from pathlib import Path
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Any
 
 _project_root = str(Path(__file__).parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-
-from dataclasses import dataclass, field
-from decimal import Decimal
-from typing import Any
-
-from src.data.trade_aggregator import TradeAggregator, FootprintBar
-from src.config import get_config
-from src.utils import get_logger, get_utc_now_ms
+from src.data.trade_aggregator import FootprintBar, FootprintLevel
+from src.utils.logging import get_logger
+from src.utils.time_utils import get_utc_now_ms
 
 logger = get_logger(__name__)
 
 
 @dataclass
-class ImbalanceLevel:
-    """Single imbalance level."""
+class Imbalance:
+    """A detected imbalance."""
+    
     price: Decimal
     buy_volume: Decimal
     sell_volume: Decimal
-    ratio: float
-    side: str  # 'buy' or 'sell'
+    ratio: Decimal
+    is_buy_imbalance: bool
     
     def to_dict(self) -> dict:
         return {
             "price": str(self.price),
             "buyVolume": str(self.buy_volume),
             "sellVolume": str(self.sell_volume),
-            "ratio": self.ratio,
-            "side": self.side,
+            "ratio": str(self.ratio),
+            "type": "buy" if self.is_buy_imbalance else "sell",
         }
 
 
 @dataclass
 class StackedImbalance:
-    """A group of consecutive imbalance levels."""
-    levels: list[ImbalanceLevel]
-    side: str  # 'buy' or 'sell'
+    """A stacked imbalance (consecutive imbalances at multiple levels)."""
+    
     start_price: Decimal
     end_price: Decimal
-    total_imbalance_volume: Decimal
-    bar_open_time: int
-    bar_close_time: int
+    levels: list[Imbalance]
+    is_buy_stack: bool
+    timestamp: int
     
     def to_dict(self) -> dict:
         return {
-            "side": self.side,
             "startPrice": str(self.start_price),
             "endPrice": str(self.end_price),
             "levelCount": len(self.levels),
-            "totalImbalanceVolume": str(self.total_imbalance_volume),
-            "barOpenTime": self.bar_open_time,
-            "barCloseTime": self.bar_close_time,
+            "type": "buy" if self.is_buy_stack else "sell",
+            "timestamp": self.timestamp,
             "levels": [level.to_dict() for level in self.levels],
+            "totalBuyVolume": str(sum(l.buy_volume for l in self.levels)),
+            "totalSellVolume": str(sum(l.sell_volume for l in self.levels)),
         }
 
 
 @dataclass
 class ImbalanceDetector:
-    """
-    Detector for stacked imbalances in footprint bars.
+    """Detector for stacked imbalances."""
     
-    An imbalance exists when buy/sell ratio >= threshold.
-    Stacked imbalances are consecutive price levels with imbalances.
-    """
+    symbol: str
+    min_ratio: Decimal = Decimal("3.0")
+    min_stack_levels: int = 3
+    min_volume: Decimal = Decimal("0.1")
     
-    aggregator: TradeAggregator
-    ratio_threshold: float = field(default_factory=lambda: get_config().imbalance_ratio_threshold)
-    consecutive_count: int = field(default_factory=lambda: get_config().imbalance_consecutive_count)
-    
-    def detect_imbalances_in_bar(self, bar: FootprintBar) -> list[StackedImbalance]:
-        """
-        Detect stacked imbalances in a single footprint bar.
+    def detect_imbalances(self, bar: FootprintBar) -> list[Imbalance]:
+        """Detect all imbalances in a footprint bar."""
+        imbalances = []
         
-        Args:
-            bar: Footprint bar to analyze
+        for price, level in bar.levels.items():
+            if level.buy_volume < self.min_volume and level.sell_volume < self.min_volume:
+                continue
             
-        Returns:
-            List of detected stacked imbalances
-        """
-        if not bar.levels:
+            if level.sell_volume > 0 and level.buy_volume / level.sell_volume >= self.min_ratio:
+                imbalances.append(Imbalance(
+                    price=price,
+                    buy_volume=level.buy_volume,
+                    sell_volume=level.sell_volume,
+                    ratio=level.buy_volume / level.sell_volume,
+                    is_buy_imbalance=True,
+                ))
+            elif level.buy_volume > 0 and level.sell_volume / level.buy_volume >= self.min_ratio:
+                imbalances.append(Imbalance(
+                    price=price,
+                    buy_volume=level.buy_volume,
+                    sell_volume=level.sell_volume,
+                    ratio=level.sell_volume / level.buy_volume,
+                    is_buy_imbalance=False,
+                ))
+        
+        return imbalances
+    
+    def detect_stacked_imbalances(self, bar: FootprintBar) -> list[StackedImbalance]:
+        """Detect stacked imbalances (consecutive levels with same-direction imbalance)."""
+        imbalances = self.detect_imbalances(bar)
+        
+        if len(imbalances) < self.min_stack_levels:
             return []
         
-        sorted_prices = sorted(bar.levels.keys())
+        imbalances.sort(key=lambda x: x.price)
         
-        buy_stack: list[ImbalanceLevel] = []
-        sell_stack: list[ImbalanceLevel] = []
-        all_imbalances: list[StackedImbalance] = []
+        stacked = []
         
-        for price in sorted_prices:
-            level = bar.levels[price]
+        buy_imbalances = [i for i in imbalances if i.is_buy_imbalance]
+        sell_imbalances = [i for i in imbalances if not i.is_buy_imbalance]
+        
+        for imbalance_list, is_buy in [(buy_imbalances, True), (sell_imbalances, False)]:
+            if len(imbalance_list) < self.min_stack_levels:
+                continue
             
-            # Calculate ratios (avoid division by zero)
-            buy_ratio = float('inf')
-            sell_ratio = float('inf')
+            current_stack = [imbalance_list[0]]
             
-            if level.sell_volume > 0:
-                buy_ratio = float(level.buy_volume / level.sell_volume)
-            if level.buy_volume > 0:
-                sell_ratio = float(level.sell_volume / level.buy_volume)
-            
-            # Check for buy imbalance (buyers dominate)
-            is_buy_imbalance = buy_ratio >= self.ratio_threshold and level.buy_volume > 0
-            # Check for sell imbalance (sellers dominate)
-            is_sell_imbalance = sell_ratio >= self.ratio_threshold and level.sell_volume > 0
-            
-            # Handle buy stack
-            if is_buy_imbalance:
-                buy_stack.append(ImbalanceLevel(
-                    price=price,
-                    buy_volume=level.buy_volume,
-                    sell_volume=level.sell_volume,
-                    ratio=buy_ratio,
-                    side="buy",
-                ))
-            else:
-                # Flush buy stack if meets threshold
-                if len(buy_stack) >= self.consecutive_count:
-                    all_imbalances.append(self._create_stacked_imbalance(
-                        buy_stack, "buy", bar
-                    ))
-                buy_stack = []
-            
-            # Handle sell stack
-            if is_sell_imbalance:
-                sell_stack.append(ImbalanceLevel(
-                    price=price,
-                    buy_volume=level.buy_volume,
-                    sell_volume=level.sell_volume,
-                    ratio=sell_ratio,
-                    side="sell",
-                ))
-            else:
-                # Flush sell stack if meets threshold
-                if len(sell_stack) >= self.consecutive_count:
-                    all_imbalances.append(self._create_stacked_imbalance(
-                        sell_stack, "sell", bar
-                    ))
-                sell_stack = []
-        
-        # Check remaining stacks
-        if len(buy_stack) >= self.consecutive_count:
-            all_imbalances.append(self._create_stacked_imbalance(
-                buy_stack, "buy", bar
-            ))
-        if len(sell_stack) >= self.consecutive_count:
-            all_imbalances.append(self._create_stacked_imbalance(
-                sell_stack, "sell", bar
-            ))
-        
-        return all_imbalances
-    
-    def _create_stacked_imbalance(
-        self,
-        levels: list[ImbalanceLevel],
-        side: str,
-        bar: FootprintBar,
-    ) -> StackedImbalance:
-        """Create a StackedImbalance from a list of levels."""
-        if side == "buy":
-            total_vol = sum(l.buy_volume - l.sell_volume for l in levels)
-        else:
-            total_vol = sum(l.sell_volume - l.buy_volume for l in levels)
-        
-        return StackedImbalance(
-            levels=levels.copy(),
-            side=side,
-            start_price=levels[0].price,
-            end_price=levels[-1].price,
-            total_imbalance_volume=total_vol,
-            bar_open_time=bar.open_time,
-            bar_close_time=bar.close_time,
-        )
-    
-    def get_recent_imbalances(
-        self,
-        timeframe: str,
-        lookback: int = 20,
-    ) -> list[dict]:
-        """
-        Get stacked imbalances from recent bars.
-        
-        Args:
-            timeframe: Bar timeframe
-            lookback: Number of bars to analyze
-            
-        Returns:
-            List of imbalance dicts
-        """
-        bars = self.aggregator.get_completed_bars(timeframe, limit=lookback)
-        
-        all_imbalances = []
-        for bar in bars:
-            imbalances = self.detect_imbalances_in_bar(bar)
-            for imb in imbalances:
-                all_imbalances.append(imb.to_dict())
-        
-        # Include current bar
-        current_bar = self.aggregator.get_current_bar(timeframe)
-        if current_bar:
-            imbalances = self.detect_imbalances_in_bar(current_bar)
-            for imb in imbalances:
-                imb_dict = imb.to_dict()
-                imb_dict["isCurrentBar"] = True
-                all_imbalances.append(imb_dict)
-        
-        return all_imbalances
-    
-    def get_imbalance_summary(
-        self,
-        timeframe: str,
-        lookback: int = 50,
-    ) -> dict:
-        """
-        Get summary of imbalances for analysis.
-        
-        Args:
-            timeframe: Bar timeframe
-            lookback: Number of bars to analyze
-            
-        Returns:
-            Summary statistics
-        """
-        bars = self.aggregator.get_completed_bars(timeframe, limit=lookback)
-        
-        buy_imbalances = []
-        sell_imbalances = []
-        
-        for bar in bars:
-            imbalances = self.detect_imbalances_in_bar(bar)
-            for imb in imbalances:
-                if imb.side == "buy":
-                    buy_imbalances.append(imb)
+            for i in range(1, len(imbalance_list)):
+                current = imbalance_list[i]
+                previous = imbalance_list[i - 1]
+                
+                if self._is_consecutive(previous.price, current.price, bar):
+                    current_stack.append(current)
                 else:
-                    sell_imbalances.append(imb)
+                    if len(current_stack) >= self.min_stack_levels:
+                        stacked.append(StackedImbalance(
+                            start_price=current_stack[0].price,
+                            end_price=current_stack[-1].price,
+                            levels=current_stack.copy(),
+                            is_buy_stack=is_buy,
+                            timestamp=bar.close_time,
+                        ))
+                    current_stack = [current]
+            
+            if len(current_stack) >= self.min_stack_levels:
+                stacked.append(StackedImbalance(
+                    start_price=current_stack[0].price,
+                    end_price=current_stack[-1].price,
+                    levels=current_stack.copy(),
+                    is_buy_stack=is_buy,
+                    timestamp=bar.close_time,
+                ))
         
-        # Find significant levels (most recent imbalances at similar prices)
-        buy_levels = {}
-        sell_levels = {}
+        return stacked
+    
+    def _is_consecutive(self, price1: Decimal, price2: Decimal, bar: FootprintBar) -> bool:
+        """Check if two prices are consecutive tick levels."""
+        tick_size = bar.tick_size
+        diff = abs(price2 - price1)
         
-        for imb in buy_imbalances:
-            for level in imb.levels:
-                price_key = str(level.price)
-                if price_key not in buy_levels:
-                    buy_levels[price_key] = {
-                        "price": str(level.price),
-                        "count": 0,
-                        "totalVolume": Decimal(0),
-                    }
-                buy_levels[price_key]["count"] += 1
-                buy_levels[price_key]["totalVolume"] += level.buy_volume
+        return diff <= tick_size * Decimal("2")
+    
+    def analyze_bars(self, bars: list[FootprintBar]) -> dict:
+        """Analyze multiple bars for imbalances."""
+        all_stacked = []
+        total_imbalances = 0
+        buy_imbalances = 0
+        sell_imbalances = 0
         
-        for imb in sell_imbalances:
-            for level in imb.levels:
-                price_key = str(level.price)
-                if price_key not in sell_levels:
-                    sell_levels[price_key] = {
-                        "price": str(level.price),
-                        "count": 0,
-                        "totalVolume": Decimal(0),
-                    }
-                sell_levels[price_key]["count"] += 1
-                sell_levels[price_key]["totalVolume"] += level.sell_volume
-        
-        # Sort by count (most significant levels first)
-        sorted_buy = sorted(buy_levels.values(), key=lambda x: x["count"], reverse=True)[:10]
-        sorted_sell = sorted(sell_levels.values(), key=lambda x: x["count"], reverse=True)[:10]
-        
-        # Convert volumes to strings
-        for level in sorted_buy:
-            level["totalVolume"] = str(level["totalVolume"])
-        for level in sorted_sell:
-            level["totalVolume"] = str(level["totalVolume"])
+        for bar in bars:
+            imbalances = self.detect_imbalances(bar)
+            total_imbalances += len(imbalances)
+            buy_imbalances += sum(1 for i in imbalances if i.is_buy_imbalance)
+            sell_imbalances += sum(1 for i in imbalances if not i.is_buy_imbalance)
+            
+            stacked = self.detect_stacked_imbalances(bar)
+            all_stacked.extend(stacked)
         
         return {
-            "symbol": self.aggregator.symbol,
-            "timeframe": timeframe,
+            "symbol": self.symbol,
+            "timestamp": get_utc_now_ms(),
             "barsAnalyzed": len(bars),
-            "ratioThreshold": self.ratio_threshold,
-            "consecutiveCount": self.consecutive_count,
-            "totalBuyImbalances": len(buy_imbalances),
-            "totalSellImbalances": len(sell_imbalances),
-            "significantBuyLevels": sorted_buy,
-            "significantSellLevels": sorted_sell,
+            "totalImbalances": total_imbalances,
+            "buyImbalances": buy_imbalances,
+            "sellImbalances": sell_imbalances,
+            "stackedImbalances": [s.to_dict() for s in all_stacked],
+            "stackedCount": len(all_stacked),
+            "buyStacks": sum(1 for s in all_stacked if s.is_buy_stack),
+            "sellStacks": sum(1 for s in all_stacked if not s.is_buy_stack),
         }

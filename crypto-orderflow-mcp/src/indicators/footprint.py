@@ -1,218 +1,122 @@
 """
-
-import sys
-from pathlib import Path
-
-_project_root = str(Path(__file__).parent.parent.parent)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
 Footprint calculation module.
 Provides footprint bar generation and analysis.
 """
 
 import sys
 from pathlib import Path
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Any
 
 _project_root = str(Path(__file__).parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-
-from dataclasses import dataclass, field
-from decimal import Decimal
-from typing import Any
-
-from src.data.trade_aggregator import FootprintBar, TradeAggregator, AggregatedTrade
-from src.utils import get_logger, get_utc_now_ms, align_timestamp_to_timeframe, get_timeframe_ms
+from src.data.trade_aggregator import TradeAggregator, FootprintBar, AggregatedTrade
+from src.utils.logging import get_logger
+from src.utils.time_utils import get_utc_now_ms
 
 logger = get_logger(__name__)
 
 
 @dataclass
 class FootprintCalculator:
-    """
-    Calculator for footprint bars.
+    """Calculator for footprint bars."""
     
-    Wraps TradeAggregator to provide footprint-specific analysis.
-    """
+    symbol: str
+    trade_aggregator: TradeAggregator
     
-    aggregator: TradeAggregator
-    
-    def get_footprint(
+    def get_footprint_bars(
         self,
         timeframe: str,
         start_time: int | None = None,
         end_time: int | None = None,
-        limit: int | None = None,
-        include_levels: bool = True,
+        limit: int = 100,
     ) -> list[dict]:
-        """
-        Get footprint bars for a timeframe.
-        
-        Args:
-            timeframe: Bar timeframe (1m, 5m, 15m, 30m, 1h)
-            start_time: Start time in ms (optional)
-            end_time: End time in ms (optional)
-            limit: Max number of bars (optional)
-            include_levels: Include price level details
-            
-        Returns:
-            List of footprint bar dicts
-        """
-        bars = self.aggregator.get_completed_bars(
+        """Get footprint bars for a timeframe."""
+        bars = self.trade_aggregator.get_completed_bars(
             timeframe=timeframe,
             start_time=start_time,
             end_time=end_time,
             limit=limit,
         )
         
-        result = [bar.to_dict(include_levels=include_levels) for bar in bars]
-        
-        # Include current (incomplete) bar if no end_time filter
-        if end_time is None:
-            current = self.aggregator.get_current_bar(timeframe)
-            if current:
-                current_dict = current.to_dict(include_levels=include_levels)
-                current_dict["isComplete"] = False
-                result.append(current_dict)
-        
-        return result
+        return [self._bar_to_dict(bar) for bar in bars]
     
-    def get_latest_footprint(
-        self,
-        timeframe: str,
-        include_levels: bool = True,
-    ) -> dict | None:
-        """
-        Get the latest footprint bar (may be incomplete).
-        
-        Args:
-            timeframe: Bar timeframe
-            include_levels: Include price level details
-            
-        Returns:
-            Latest footprint bar dict or None
-        """
-        current = self.aggregator.get_current_bar(timeframe)
-        if current:
-            result = current.to_dict(include_levels=include_levels)
-            result["isComplete"] = False
-            return result
-        
-        # No current bar, get last completed
-        bars = self.aggregator.get_completed_bars(timeframe, limit=1)
-        if bars:
-            result = bars[-1].to_dict(include_levels=include_levels)
-            result["isComplete"] = True
-            return result
-        
+    def get_current_bar(self, timeframe: str) -> dict | None:
+        """Get the current developing bar."""
+        bar = self.trade_aggregator.get_current_bar(timeframe)
+        if bar:
+            return self._bar_to_dict(bar)
         return None
     
-    def get_footprint_summary(
-        self,
-        timeframe: str,
-        lookback: int = 20,
-    ) -> dict:
-        """
-        Get summary statistics for recent footprint bars.
-        
-        Args:
-            timeframe: Bar timeframe
-            lookback: Number of bars to analyze
-            
-        Returns:
-            Summary statistics
-        """
-        bars = self.aggregator.get_completed_bars(timeframe, limit=lookback)
-        
-        if not bars:
-            return {
-                "symbol": self.aggregator.symbol,
-                "timeframe": timeframe,
-                "barCount": 0,
-                "avgVolume": "0",
-                "avgDelta": "0",
-                "totalDelta": "0",
-                "bullishBars": 0,
-                "bearishBars": 0,
-            }
-        
-        total_volume = sum(bar.total_volume for bar in bars)
-        total_delta = sum(bar.delta for bar in bars)
-        bullish = sum(1 for bar in bars if bar.delta > 0)
-        bearish = sum(1 for bar in bars if bar.delta < 0)
+    def _bar_to_dict(self, bar: FootprintBar) -> dict:
+        """Convert footprint bar to dictionary."""
+        levels = []
+        for price, level in sorted(bar.levels.items(), reverse=True):
+            levels.append({
+                "price": str(price),
+                "buyVolume": str(level.buy_volume),
+                "sellVolume": str(level.sell_volume),
+                "delta": str(level.delta),
+                "totalVolume": str(level.total_volume),
+                "buyCount": level.buy_count,
+                "sellCount": level.sell_count,
+            })
         
         return {
-            "symbol": self.aggregator.symbol,
-            "timeframe": timeframe,
-            "barCount": len(bars),
-            "avgVolume": str(total_volume / len(bars)),
-            "avgDelta": str(total_delta / len(bars)),
-            "totalDelta": str(total_delta),
-            "bullishBars": bullish,
-            "bearishBars": bearish,
-            "startTime": bars[0].open_time,
-            "endTime": bars[-1].close_time,
+            "symbol": self.symbol,
+            "timeframe": bar.timeframe,
+            "openTime": bar.open_time,
+            "closeTime": bar.close_time,
+            "open": str(bar.open),
+            "high": str(bar.high),
+            "low": str(bar.low),
+            "close": str(bar.close),
+            "buyVolume": str(bar.total_buy_volume),
+            "sellVolume": str(bar.total_sell_volume),
+            "totalVolume": str(bar.total_volume),
+            "delta": str(bar.delta),
+            "maxDeltaPrice": str(bar.max_delta_price) if bar.max_delta_price else None,
+            "minDeltaPrice": str(bar.min_delta_price) if bar.min_delta_price else None,
+            "tradeCount": bar.trade_count,
+            "levels": levels,
+            "isComplete": True,  # Completed bars from trade aggregator
         }
     
-    def analyze_volume_cluster(
-        self,
-        timeframe: str,
-        lookback: int = 10,
-    ) -> dict:
-        """
-        Analyze volume clusters across recent bars.
-        
-        Identifies high volume price levels that may act as support/resistance.
-        
-        Args:
-            timeframe: Bar timeframe
-            lookback: Number of bars to analyze
-            
-        Returns:
-            Volume cluster analysis
-        """
-        bars = self.aggregator.get_completed_bars(timeframe, limit=lookback)
+    def get_summary(self, timeframe: str, limit: int = 10) -> dict:
+        """Get summary statistics for recent bars."""
+        bars = self.trade_aggregator.get_completed_bars(timeframe=timeframe, limit=limit)
         
         if not bars:
             return {
-                "symbol": self.aggregator.symbol,
+                "symbol": self.symbol,
                 "timeframe": timeframe,
-                "clusters": [],
+                "barCount": 0,
+                "avgDelta": "0",
+                "avgVolume": "0",
+                "totalVolume": "0",
+                "maxDelta": "0",
+                "minDelta": "0",
             }
         
-        # Aggregate volume by price level across all bars
-        level_volumes: dict[Decimal, Decimal] = {}
-        
-        for bar in bars:
-            for price, level in bar.levels.items():
-                if price not in level_volumes:
-                    level_volumes[price] = Decimal(0)
-                level_volumes[price] += level.total_volume
-        
-        # Sort by volume and get top levels
-        sorted_levels = sorted(
-            level_volumes.items(),
-            key=lambda x: x[1],
-            reverse=True,
-        )[:20]
-        
-        total_vol = sum(v for _, v in level_volumes.items())
-        
-        clusters = [
-            {
-                "price": str(price),
-                "volume": str(vol),
-                "percentOfTotal": str((vol / total_vol * 100).quantize(Decimal("0.01"))),
-            }
-            for price, vol in sorted_levels
-        ]
+        total_delta = sum(bar.delta for bar in bars)
+        total_volume = sum(bar.total_volume for bar in bars)
+        max_delta = max(bar.delta for bar in bars)
+        min_delta = min(bar.delta for bar in bars)
         
         return {
-            "symbol": self.aggregator.symbol,
+            "symbol": self.symbol,
             "timeframe": timeframe,
+            "timestamp": get_utc_now_ms(),
             "barCount": len(bars),
-            "totalVolume": str(total_vol),
-            "clusters": clusters,
+            "avgDelta": str(total_delta / len(bars)),
+            "avgVolume": str(total_volume / len(bars)),
+            "totalVolume": str(total_volume),
+            "totalDelta": str(total_delta),
+            "maxDelta": str(max_delta),
+            "minDelta": str(min_delta),
+            "startTime": bars[-1].open_time if bars else None,
+            "endTime": bars[0].close_time if bars else None,
         }

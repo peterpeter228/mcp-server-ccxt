@@ -1,102 +1,86 @@
 """
-
-import sys
-from pathlib import Path
-
-_project_root = str(Path(__file__).parent.parent.parent)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
 get_footprint tool implementation.
 Returns footprint bars with volume by price level.
 """
 
 import sys
 from pathlib import Path
+from typing import Any
 
 _project_root = str(Path(__file__).parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-
-from typing import Any
-
-from src.indicators import FootprintCalculator
-from src.storage import SQLiteStore
-from src.utils import get_logger, get_utc_now_ms
+from src.utils.logging import get_logger
+from src.utils.time_utils import get_utc_now_ms
 
 logger = get_logger(__name__)
 
 
 async def get_footprint(
     symbol: str,
-    timeframe: str,
-    start_time: int | None,
-    end_time: int | None,
-    limit: int,
-    fp_calc: FootprintCalculator | None,
-    store: SQLiteStore,
+    footprint_calculator: Any,
+    timeframe: str = "5m",
+    start_time: int | None = None,
+    end_time: int | None = None,
+    limit: int = 100,
+    include_current: bool = True,
 ) -> dict:
     """
-    Get footprint bars for a symbol.
+    Get footprint bars.
+    
+    Args:
+        symbol: Trading pair symbol
+        footprint_calculator: FootprintCalculator instance
+        timeframe: Bar timeframe (1m, 5m, 15m, 30m, 1h)
+        start_time: Start timestamp in ms
+        end_time: End timestamp in ms
+        limit: Maximum number of bars to return
+        include_current: Include the developing (incomplete) bar
     
     Returns:
-        {
-            "timestamp": int,
-            "symbol": str,
-            "exchange": "binance",
-            "marketType": "linear perpetual",
-            "timeframe": str,
-            "bars": [...]
-        }
+        Footprint bar data with volume by price level
     """
     result = {
-        "timestamp": get_utc_now_ms(),
         "symbol": symbol,
         "exchange": "binance",
-        "marketType": "linear perpetual",
+        "marketType": "linear_perpetual",
+        "timestamp": get_utc_now_ms(),
         "timeframe": timeframe,
-        "startTime": start_time,
-        "endTime": end_time,
-        "bars": [],
+        "requestedLimit": limit,
     }
     
-    # Get from calculator (in-memory data)
-    if fp_calc:
-        bars = fp_calc.get_footprint(
+    try:
+        bars = footprint_calculator.get_footprint_bars(
             timeframe=timeframe,
             start_time=start_time,
             end_time=end_time,
             limit=limit,
-            include_levels=True,
         )
+        
         result["bars"] = bars
-        result["source"] = "live"
-    
-    # If no data from calculator, try database
-    if not result["bars"]:
-        stored_bars = await store.get_footprint_bars(
+        result["barCount"] = len(bars)
+        
+        if include_current:
+            current_bar = footprint_calculator.get_current_bar(timeframe)
+            result["currentBar"] = current_bar
+        
+        summary = footprint_calculator.get_summary(timeframe, limit=min(limit, 20))
+        result["summary"] = summary
+        
+    except Exception as e:
+        logger.error(
+            "Error getting footprint",
             symbol=symbol,
             timeframe=timeframe,
-            start_time=start_time,
-            end_time=end_time,
-            limit=limit,
+            error=str(e),
         )
-        result["bars"] = stored_bars
-        result["source"] = "database"
-    
-    result["barCount"] = len(result["bars"])
-    
-    # Add summary statistics
-    if result["bars"]:
-        total_volume = sum(float(b.get("totalVolume", 0)) for b in result["bars"])
-        total_delta = sum(float(b.get("delta", 0)) for b in result["bars"])
-        
-        result["summary"] = {
-            "totalVolume": str(total_volume),
-            "totalDelta": str(total_delta),
-            "avgVolume": str(total_volume / len(result["bars"])),
-            "avgDelta": str(total_delta / len(result["bars"])),
-        }
+        result.update({
+            "bars": [],
+            "barCount": 0,
+            "currentBar": None,
+            "summary": None,
+            "error": str(e),
+        })
     
     return result

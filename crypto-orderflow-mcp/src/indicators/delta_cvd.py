@@ -1,106 +1,119 @@
 """
-
-import sys
-from pathlib import Path
-
-_project_root = str(Path(__file__).parent.parent.parent)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
 Delta and Cumulative Volume Delta (CVD) calculator.
 """
 
 import sys
 from pathlib import Path
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Any
+from collections import deque
 
 _project_root = str(Path(__file__).parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-
-from dataclasses import dataclass, field
-from decimal import Decimal
-from typing import Any
-
-from src.data.trade_aggregator import TradeAggregator
-from src.utils import get_logger, get_utc_now_ms
+from src.data.trade_aggregator import TradeAggregator, FootprintBar, AggregatedTrade
+from src.utils.logging import get_logger
+from src.utils.time_utils import get_utc_now_ms
 
 logger = get_logger(__name__)
 
 
 @dataclass
+class DeltaPoint:
+    """A single delta data point."""
+    timestamp: int
+    delta: Decimal
+    cvd: Decimal
+    buy_volume: Decimal
+    sell_volume: Decimal
+    
+    def to_dict(self) -> dict:
+        return {
+            "timestamp": self.timestamp,
+            "delta": str(self.delta),
+            "cvd": str(self.cvd),
+            "buyVolume": str(self.buy_volume),
+            "sellVolume": str(self.sell_volume),
+        }
+
+
+@dataclass
 class DeltaCVDCalculator:
-    """
-    Calculator for Delta and Cumulative Volume Delta.
+    """Calculator for Delta and Cumulative Volume Delta."""
     
-    Delta = Buy Volume - Sell Volume
-    CVD = Running sum of Delta
-    """
+    symbol: str
+    trade_aggregator: TradeAggregator
+    max_history: int = 10000
     
-    aggregator: TradeAggregator
+    _cvd: Decimal = field(default=Decimal(0), init=False)
+    _delta_history: deque = field(default_factory=deque, init=False)
+    _session_start_cvd: Decimal = field(default=Decimal(0), init=False)
+    
+    def __post_init__(self):
+        self._delta_history = deque(maxlen=self.max_history)
+    
+    def add_trade(self, trade: AggregatedTrade) -> None:
+        """Add a trade and update delta/CVD."""
+        delta = trade.quantity if trade.is_buyer_maker else -trade.quantity
+        self._cvd += delta
+        
+        point = DeltaPoint(
+            timestamp=trade.timestamp,
+            delta=delta,
+            cvd=self._cvd,
+            buy_volume=trade.quantity if trade.is_buyer_maker else Decimal(0),
+            sell_volume=Decimal(0) if trade.is_buyer_maker else trade.quantity,
+        )
+        self._delta_history.append(point)
+    
+    def add_trades(self, trades: list[AggregatedTrade]) -> None:
+        """Add multiple trades."""
+        for trade in trades:
+            self.add_trade(trade)
+    
+    def get_current_cvd(self) -> Decimal:
+        """Get current CVD value."""
+        return self._cvd
+    
+    def get_session_cvd(self) -> Decimal:
+        """Get CVD since session start."""
+        return self._cvd - self._session_start_cvd
+    
+    def reset_session_cvd(self) -> None:
+        """Reset session CVD at session start."""
+        self._session_start_cvd = self._cvd
     
     def get_delta_series(
         self,
-        timeframe: str,
         start_time: int | None = None,
         end_time: int | None = None,
-        limit: int | None = None,
+        limit: int = 100,
     ) -> list[dict]:
-        """
-        Get delta series for a timeframe.
+        """Get delta series for time range."""
+        result = []
         
-        Args:
-            timeframe: Bar timeframe
-            start_time: Start time filter (ms)
-            end_time: End time filter (ms)
-            limit: Max number of entries
-            
-        Returns:
-            List of {openTime, delta, buyVolume, sellVolume} dicts
-        """
-        bars = self.aggregator.get_completed_bars(
-            timeframe=timeframe,
-            start_time=start_time,
-            end_time=end_time,
-            limit=limit,
-        )
-        
-        result = [
-            {
-                "openTime": bar.open_time,
-                "closeTime": bar.close_time,
-                "delta": str(bar.delta),
-                "buyVolume": str(bar.total_buy_volume),
-                "sellVolume": str(bar.total_sell_volume),
-                "totalVolume": str(bar.total_volume),
-            }
-            for bar in bars
-        ]
+        for point in self._delta_history:
+            if start_time and point.timestamp < start_time:
+                continue
+            if end_time and point.timestamp > end_time:
+                continue
+            result.append(point.to_dict())
+            if len(result) >= limit:
+                break
         
         return result
     
-    def get_cvd_series(
+    def get_bar_deltas(
         self,
         timeframe: str,
         start_time: int | None = None,
         end_time: int | None = None,
-        limit: int | None = None,
-        reset_at_start: bool = True,
+        limit: int = 100,
     ) -> list[dict]:
-        """
-        Get CVD series for a timeframe.
-        
-        Args:
-            timeframe: Bar timeframe
-            start_time: Start time filter (ms)
-            end_time: End time filter (ms)
-            limit: Max number of entries
-            reset_at_start: If True, CVD starts at 0 at the beginning of the range
-            
-        Returns:
-            List of {openTime, delta, cvd} dicts
-        """
-        bars = self.aggregator.get_completed_bars(
+        """Get delta data aggregated by bar."""
+        bars = self.trade_aggregator.get_completed_bars(
             timeframe=timeframe,
             start_time=start_time,
             end_time=end_time,
@@ -108,134 +121,59 @@ class DeltaCVDCalculator:
         )
         
         result = []
-        cvd = Decimal(0)
+        running_cvd = Decimal(0)
         
-        for bar in bars:
-            cvd += bar.delta
+        sorted_bars = sorted(bars, key=lambda b: b.open_time)
+        
+        for bar in sorted_bars:
+            running_cvd += bar.delta
             result.append({
                 "openTime": bar.open_time,
                 "closeTime": bar.close_time,
                 "delta": str(bar.delta),
-                "cvd": str(cvd),
+                "cvd": str(running_cvd),
+                "buyVolume": str(bar.total_buy_volume),
+                "sellVolume": str(bar.total_sell_volume),
+                "totalVolume": str(bar.total_volume),
             })
         
         return result
     
-    def get_current_cvd(self) -> str:
-        """Get current CVD value."""
-        return str(self.aggregator.cvd)
-    
-    def get_delta_divergence(
-        self,
-        timeframe: str,
-        lookback: int = 20,
-    ) -> dict:
-        """
-        Analyze delta divergence from price.
-        
-        Identifies situations where price and CVD are moving in opposite directions,
-        which may indicate potential reversals.
-        
-        Args:
-            timeframe: Bar timeframe
-            lookback: Number of bars to analyze
-            
-        Returns:
-            Divergence analysis
-        """
-        bars = self.aggregator.get_completed_bars(timeframe, limit=lookback)
-        
-        if len(bars) < 5:
-            return {
-                "symbol": self.aggregator.symbol,
-                "timeframe": timeframe,
-                "hasDivergence": False,
-                "divergenceType": None,
-                "message": "Insufficient data",
-            }
-        
-        # Compare first half vs second half
-        mid = len(bars) // 2
-        first_half = bars[:mid]
-        second_half = bars[mid:]
-        
-        # Price direction
-        first_price_avg = sum(bar.close for bar in first_half) / len(first_half)
-        second_price_avg = sum(bar.close for bar in second_half) / len(second_half)
-        price_rising = second_price_avg > first_price_avg
-        
-        # CVD direction
-        first_cvd = sum(bar.delta for bar in first_half)
-        second_cvd = sum(bar.delta for bar in second_half)
-        cvd_rising = second_cvd > first_cvd
-        
-        divergence_type = None
-        if price_rising and not cvd_rising:
-            divergence_type = "bearish"  # Price up, CVD down
-        elif not price_rising and cvd_rising:
-            divergence_type = "bullish"  # Price down, CVD up
-        
-        return {
-            "symbol": self.aggregator.symbol,
-            "timeframe": timeframe,
-            "hasDivergence": divergence_type is not None,
-            "divergenceType": divergence_type,
-            "priceDirection": "up" if price_rising else "down",
-            "cvdDirection": "up" if cvd_rising else "down",
-            "firstHalfCVD": str(first_cvd),
-            "secondHalfCVD": str(second_cvd),
-            "barsAnalyzed": len(bars),
-        }
-    
-    def get_delta_stats(
-        self,
-        timeframe: str,
-        lookback: int = 100,
-    ) -> dict:
-        """
-        Get statistical analysis of delta.
-        
-        Args:
-            timeframe: Bar timeframe
-            lookback: Number of bars to analyze
-            
-        Returns:
-            Delta statistics
-        """
-        bars = self.aggregator.get_completed_bars(timeframe, limit=lookback)
+    def get_summary(self, timeframe: str = "1m", lookback_bars: int = 60) -> dict:
+        """Get CVD summary statistics."""
+        bars = self.trade_aggregator.get_completed_bars(
+            timeframe=timeframe,
+            limit=lookback_bars,
+        )
         
         if not bars:
             return {
-                "symbol": self.aggregator.symbol,
-                "timeframe": timeframe,
-                "barCount": 0,
+                "symbol": self.symbol,
+                "timestamp": get_utc_now_ms(),
+                "currentCVD": str(self._cvd),
+                "sessionCVD": str(self.get_session_cvd()),
+                "periodDelta": "0",
+                "avgDelta": "0",
+                "deltaStdDev": "0",
             }
         
         deltas = [bar.delta for bar in bars]
         total_delta = sum(deltas)
-        avg_delta = total_delta / len(deltas)
+        avg_delta = total_delta / len(deltas) if deltas else Decimal(0)
         
-        positive_deltas = [d for d in deltas if d > 0]
-        negative_deltas = [d for d in deltas if d < 0]
-        
-        max_delta = max(deltas)
-        min_delta = min(deltas)
-        
-        # Calculate standard deviation
-        variance = sum((d - avg_delta) ** 2 for d in deltas) / len(deltas)
-        std_delta = variance ** Decimal("0.5")
+        variance = sum((d - avg_delta) ** 2 for d in deltas) / len(deltas) if deltas else Decimal(0)
+        std_dev = variance ** Decimal("0.5")
         
         return {
-            "symbol": self.aggregator.symbol,
+            "symbol": self.symbol,
+            "timestamp": get_utc_now_ms(),
             "timeframe": timeframe,
-            "barCount": len(bars),
-            "totalDelta": str(total_delta),
+            "lookbackBars": len(bars),
+            "currentCVD": str(self._cvd),
+            "sessionCVD": str(self.get_session_cvd()),
+            "periodDelta": str(total_delta),
             "avgDelta": str(avg_delta),
-            "maxDelta": str(max_delta),
-            "minDelta": str(min_delta),
-            "stdDelta": str(std_delta),
-            "positiveBars": len(positive_deltas),
-            "negativeBars": len(negative_deltas),
-            "avgPositiveDelta": str(sum(positive_deltas) / len(positive_deltas)) if positive_deltas else "0",
-            "avgNegativeDelta": str(sum(negative_deltas) / len(negative_deltas)) if negative_deltas else "0",
+            "deltaStdDev": str(std_dev),
+            "maxDelta": str(max(deltas)) if deltas else "0",
+            "minDelta": str(min(deltas)) if deltas else "0",
         }

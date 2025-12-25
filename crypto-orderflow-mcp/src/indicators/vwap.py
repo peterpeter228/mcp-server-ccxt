@@ -1,31 +1,21 @@
 """
-
-import sys
-from pathlib import Path
-
-_project_root = str(Path(__file__).parent.parent.parent)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
 VWAP (Volume Weighted Average Price) calculator.
 Calculates developing VWAP (dVWAP) and previous day VWAP (pdVWAP).
 """
 
 import sys
 from pathlib import Path
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Any
 
 _project_root = str(Path(__file__).parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-
-from dataclasses import dataclass, field
-from decimal import Decimal
-from typing import Any
-
 from src.data.trade_aggregator import AggregatedTrade
-from src.utils import (
-    get_logger,
+from src.utils.logging import get_logger
+from src.utils.time_utils import (
     get_utc_now_ms,
     get_day_start_ms,
     get_previous_day_start_ms,
@@ -39,7 +29,7 @@ logger = get_logger(__name__)
 class VWAPData:
     """VWAP calculation data."""
     vwap: Decimal
-    cumulative_tp_volume: Decimal  # Sum of (typical_price * volume)
+    cumulative_tp_volume: Decimal
     cumulative_volume: Decimal
     high: Decimal
     low: Decimal
@@ -62,14 +52,7 @@ class VWAPData:
 
 @dataclass
 class VWAPCalculator:
-    """
-    Calculator for Volume Weighted Average Price.
-    
-    VWAP = Cumulative(Typical Price × Volume) / Cumulative(Volume)
-    Typical Price = (High + Low + Close) / 3
-    
-    For trade-level VWAP, we use the trade price as typical price.
-    """
+    """Calculator for Volume Weighted Average Price."""
     
     symbol: str
     
@@ -86,9 +69,7 @@ class VWAPCalculator:
         new_day_start = self._get_current_day_start()
         
         if self._current_day_start != new_day_start:
-            # Day has changed
             if self._current_day_data is not None:
-                # Move current to previous
                 self._previous_day_data = self._current_day_data
                 logger.info(
                     "VWAP day rollover",
@@ -96,23 +77,15 @@ class VWAPCalculator:
                     previous_vwap=str(self._previous_day_data.vwap),
                 )
             
-            # Reset current day
             self._current_day_data = None
             self._current_day_start = new_day_start
     
     def add_trade(self, trade: AggregatedTrade) -> None:
-        """
-        Add a trade to VWAP calculation.
-        
-        Args:
-            trade: Aggregated trade
-        """
+        """Add a trade to VWAP calculation."""
         self._check_day_rollover()
         
-        # Check if trade belongs to current day
         trade_day_start = get_day_start_ms(ms_to_datetime(trade.timestamp))
         if trade_day_start != self._current_day_start:
-            # Trade is from a different day (likely backfill or late arrival)
             logger.debug(
                 "Trade from different day",
                 symbol=self.symbol,
@@ -121,7 +94,6 @@ class VWAPCalculator:
             )
             return
         
-        # Update current day data
         if self._current_day_data is None:
             self._current_day_data = VWAPData(
                 vwap=trade.price,
@@ -158,12 +130,7 @@ class VWAPCalculator:
         return self._previous_day_data
     
     def set_previous_day_data(self, data: VWAPData) -> None:
-        """
-        Set previous day VWAP data (for initialization from storage).
-        
-        Args:
-            data: Previous day VWAP data
-        """
+        """Set previous day VWAP data (for initialization from storage)."""
         self._previous_day_data = data
     
     def initialize_from_trades(
@@ -171,14 +138,7 @@ class VWAPCalculator:
         current_day_trades: list[AggregatedTrade],
         previous_day_trades: list[AggregatedTrade] | None = None,
     ) -> None:
-        """
-        Initialize VWAP from historical trades.
-        
-        Args:
-            current_day_trades: Trades for current day
-            previous_day_trades: Trades for previous day (optional)
-        """
-        # Calculate previous day VWAP if provided
+        """Initialize VWAP from historical trades."""
         if previous_day_trades:
             prev_start = get_previous_day_start_ms()
             cum_tp_vol = Decimal(0)
@@ -214,7 +174,6 @@ class VWAPCalculator:
                     trades=count,
                 )
         
-        # Add current day trades
         self._current_day_start = self._get_current_day_start()
         for trade in current_day_trades:
             self.add_trade(trade)
@@ -227,12 +186,7 @@ class VWAPCalculator:
         )
     
     def get_levels(self) -> dict:
-        """
-        Get all VWAP levels.
-        
-        Returns:
-            Dict with dVWAP and pdVWAP data
-        """
+        """Get all VWAP levels."""
         result = {
             "symbol": self.symbol,
             "timestamp": get_utc_now_ms(),

@@ -45,7 +45,7 @@ from src.tools.key_levels import get_key_levels
 from src.tools.footprint import get_footprint
 from src.tools.orderflow_metrics import get_orderflow_metrics
 from src.tools.depth_delta import get_orderbook_depth_delta
-from src.tools.liquidations import stream_liquidations
+from src.tools.liquidations import stream_liquidations, LiquidationCache
 
 logger = get_logger(__name__)
 
@@ -87,10 +87,10 @@ class CryptoMCPServer:
     footprint_calculators: dict[str, FootprintCalculator] = field(default_factory=dict)
     delta_cvd_calculators: dict[str, DeltaCVDCalculator] = field(default_factory=dict)
     imbalance_detectors: dict[str, ImbalanceDetector] = field(default_factory=dict)
-    depth_delta_calculator: DepthDeltaCalculator | None = None
+    depth_delta_calculators: dict[str, DepthDeltaCalculator] = field(default_factory=dict)
     
-    # Liquidation buffer
-    liquidation_buffer: dict[str, Deque[dict]] = field(default_factory=dict)
+    # Liquidation caches
+    liquidation_caches: dict[str, LiquidationCache] = field(default_factory=dict)
     
     # State
     _running: bool = False
@@ -102,8 +102,8 @@ class CryptoMCPServer:
         # Setup logging
         setup_logging(self.config.log_level, self.config.log_format)
         
-        # Connect to database
-        await self.store.connect()
+        # Initialize database
+        await self.store.initialize()
         
         # Initialize per-symbol components
         for symbol in self.config.symbols:
@@ -122,24 +122,28 @@ class CryptoMCPServer:
                 tick_size=tick_size,
                 value_area_percent=self.config.value_area_percent,
             )
+            # Convert session list to dict by name
+            sessions_dict = {s.name.lower(): s for s in self.config.sessions}
             self.session_level_calculators[symbol] = SessionLevelCalculator(
                 symbol=symbol,
-                sessions=self.config.sessions,
+                sessions=sessions_dict,
             )
             self.footprint_calculators[symbol] = FootprintCalculator(
-                aggregator=self.trade_aggregators[symbol]
+                symbol=symbol,
+                trade_aggregator=self.trade_aggregators[symbol],
             )
             self.delta_cvd_calculators[symbol] = DeltaCVDCalculator(
-                aggregator=self.trade_aggregators[symbol]
+                symbol=symbol,
+                trade_aggregator=self.trade_aggregators[symbol],
             )
             self.imbalance_detectors[symbol] = ImbalanceDetector(
-                aggregator=self.trade_aggregators[symbol],
-                ratio_threshold=self.config.imbalance_ratio_threshold,
-                consecutive_count=self.config.imbalance_consecutive_count,
+                symbol=symbol,
+                min_ratio=Decimal(str(self.config.imbalance_ratio_threshold)),
+                min_stack_levels=self.config.imbalance_consecutive_count,
             )
             
-            # Liquidation buffer
-            self.liquidation_buffer[symbol] = deque(maxlen=1000)
+            # Liquidation cache
+            self.liquidation_caches[symbol] = LiquidationCache(max_size=1000)
         
         # Initialize orderbook manager
         self.orderbook_manager = OrderbookManager(
@@ -150,12 +154,15 @@ class CryptoMCPServer:
             resync_interval=self.config.orderbook_sync_interval,
         )
         
-        # Initialize depth delta calculator
-        self.depth_delta_calculator = DepthDeltaCalculator(
-            orderbook_manager=self.orderbook_manager,
-            percent_range=self.config.depth_delta_percent,
-            sample_interval_sec=self.config.depth_delta_interval_sec,
-        )
+        # Initialize depth delta calculators (one per symbol for now)
+        self.depth_delta_calculators: dict[str, DepthDeltaCalculator] = {}
+        for symbol in self.config.symbols:
+            self.depth_delta_calculators[symbol] = DepthDeltaCalculator(
+                symbol=symbol,
+                orderbook_manager=self.orderbook_manager,
+                percent_range=Decimal(str(self.config.depth_delta_percent)),
+                snapshot_interval_sec=self.config.depth_delta_interval_sec,
+            )
         
         # Initialize all-markets WebSocket for liquidations
         self.all_markets_ws = BinanceAllMarketsWebSocket(
@@ -190,8 +197,9 @@ class CryptoMCPServer:
         # Start orderbook manager
         await self.orderbook_manager.start()
         
-        # Start depth delta calculator
-        await self.depth_delta_calculator.start()
+        # Start depth delta calculators
+        for calc in self.depth_delta_calculators.values():
+            await calc.start()
         
         # Start cleanup task
         asyncio.create_task(self._cleanup_loop())
@@ -207,8 +215,8 @@ class CryptoMCPServer:
             await self.all_markets_ws.disconnect()
         if self.orderbook_manager:
             await self.orderbook_manager.stop()
-        if self.depth_delta_calculator:
-            await self.depth_delta_calculator.stop()
+        for calc in self.depth_delta_calculators.values():
+            await calc.stop()
         
         await self.rest_client.close()
         await self.store.close()
@@ -218,6 +226,10 @@ class CryptoMCPServer:
     async def _on_trade(self, data: dict) -> None:
         """Handle incoming trade from WebSocket."""
         try:
+            # Validate data is a dict with expected trade fields
+            if not isinstance(data, dict) or "a" not in data:
+                return
+            
             trade = AggregatedTrade.from_ws_data(data)
             symbol = data.get("s", "")
             
@@ -241,7 +253,7 @@ class CryptoMCPServer:
             order = data.get("o", {})
             symbol = order.get("s", "")
             
-            if symbol in self.liquidation_buffer:
+            if symbol in self.liquidation_caches:
                 liq_event = {
                     "symbol": symbol,
                     "side": order.get("S", ""),
@@ -254,18 +266,10 @@ class CryptoMCPServer:
                     "timestamp": order.get("T", get_utc_now_ms()),
                 }
                 
-                self.liquidation_buffer[symbol].append(liq_event)
+                self.liquidation_caches[symbol].add(liq_event)
                 
                 # Also save to database
-                await self.store.save_liquidation(
-                    symbol=symbol,
-                    side=liq_event["side"],
-                    price=liq_event["price"],
-                    quantity=liq_event["quantity"],
-                    timestamp=liq_event["timestamp"],
-                    order_type=liq_event["orderType"],
-                    time_in_force=liq_event["timeInForce"],
-                )
+                await self.store.save_liquidation(liq_event)
         except Exception as e:
             logger.error("Error processing liquidation", error=str(e))
     
@@ -277,7 +281,7 @@ class CryptoMCPServer:
                 await self.store.cleanup_old_data()
                 
                 # Clean cache
-                await self.cache.cleanup()
+                await self.cache.cleanup_expired()
                 
             except Exception as e:
                 logger.error("Cleanup error", error=str(e))
@@ -359,13 +363,15 @@ class CryptoMCPServer:
         lookback: int = 100,
     ) -> dict:
         """Get orderbook depth delta for a symbol."""
+        depth_calc = self.depth_delta_calculators.get(symbol)
+        if not depth_calc:
+            return {"error": f"No depth delta calculator for {symbol}"}
         return await get_orderbook_depth_delta(
             symbol=symbol,
+            depth_delta_calculator=depth_calc,
             percent=percent,
             window_sec=window_sec,
             lookback=lookback,
-            depth_delta_calc=self.depth_delta_calculator,
-            orderbook_manager=self.orderbook_manager,
         )
     
     async def api_stream_liquidations(
@@ -374,11 +380,14 @@ class CryptoMCPServer:
         limit: int = 100,
     ) -> dict:
         """Get recent liquidations for a symbol."""
+        liq_cache = self.liquidation_caches.get(symbol)
+        if not liq_cache:
+            return {"error": f"No liquidation cache for {symbol}"}
         return await stream_liquidations(
             symbol=symbol,
+            liquidation_cache=liq_cache,
+            sqlite_store=self.store,
             limit=limit,
-            liq_buffer=self.liquidation_buffer.get(symbol),
-            store=self.store,
         )
     
     def get_health(self) -> dict:
@@ -389,7 +398,7 @@ class CryptoMCPServer:
             "symbols": self.config.symbols,
             "websocket": self.ws_client.get_status(),
             "orderbook": self.orderbook_manager.get_status() if self.orderbook_manager else None,
-            "cache": self.cache.get_stats(),
+            "cacheSize": self.cache.size(),
         }
     
     # ==================== HTTP Server ====================

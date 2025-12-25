@@ -1,118 +1,104 @@
 """
-
-import sys
-from pathlib import Path
-
-_project_root = str(Path(__file__).parent.parent.parent)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
 get_market_snapshot tool implementation.
 Returns current market snapshot including price, volume, funding, and OI.
 """
 
 import sys
 from pathlib import Path
+from typing import Any
 
 _project_root = str(Path(__file__).parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-
-from typing import Any
-
-from src.data import BinanceRestClient
-from src.storage import DataCache
-from src.utils import get_logger, get_utc_now_ms
+from src.utils.logging import get_logger
+from src.utils.time_utils import get_utc_now_ms
 
 logger = get_logger(__name__)
 
 
 async def get_market_snapshot(
     symbol: str,
-    rest_client: BinanceRestClient,
-    cache: DataCache,
+    rest_client: Any,
+    orderbook_manager: Any,
 ) -> dict:
     """
-    Get market snapshot for a symbol.
+    Get current market snapshot.
+    
+    Args:
+        symbol: Trading pair symbol (e.g., BTCUSDT)
+        rest_client: BinanceRestClient instance
+        orderbook_manager: OrderbookManager instance
     
     Returns:
-        {
-            "timestamp": int,
-            "symbol": str,
-            "exchange": "binance",
-            "marketType": "linear perpetual",
-            "price": str,
-            "markPrice": str,
-            "indexPrice": str,
-            "high24h": str,
-            "low24h": str,
-            "volume24h": str,
-            "quoteVolume24h": str,
-            "fundingRate": str,
-            "nextFundingTime": int,
-            "openInterest": str,
-            "openInterestValue": str
-        }
+        Market snapshot with price, volume, funding, OI data
     """
-    cache_key = f"market_snapshot:{symbol}"
-    
-    # Try cache first (5 second TTL)
-    cached = await cache.get(cache_key)
-    if cached:
-        return cached
+    result = {
+        "symbol": symbol,
+        "exchange": "binance",
+        "marketType": "linear_perpetual",
+        "timestamp": get_utc_now_ms(),
+    }
     
     try:
-        # Fetch data from multiple endpoints
-        ticker_task = rest_client.get_ticker_24h(symbol)
-        mark_price_task = rest_client.get_mark_price(symbol)
-        oi_task = rest_client.get_open_interest(symbol)
-        
-        # Await all tasks
-        import asyncio
-        ticker, mark_price, oi = await asyncio.gather(
-            ticker_task, mark_price_task, oi_task
-        )
-        
-        result = {
-            "timestamp": get_utc_now_ms(),
-            "symbol": symbol,
-            "exchange": "binance",
-            "marketType": "linear perpetual",
-            
-            # Price data
-            "price": ticker.get("lastPrice", "0"),
-            "markPrice": mark_price.get("markPrice", "0"),
-            "indexPrice": mark_price.get("indexPrice", "0"),
-            
-            # 24h stats
-            "high24h": ticker.get("highPrice", "0"),
-            "low24h": ticker.get("lowPrice", "0"),
-            "volume24h": ticker.get("volume", "0"),
-            "quoteVolume24h": ticker.get("quoteVolume", "0"),
-            "priceChange24h": ticker.get("priceChange", "0"),
-            "priceChangePercent24h": ticker.get("priceChangePercent", "0"),
-            
-            # Funding
-            "fundingRate": mark_price.get("lastFundingRate", "0"),
-            "nextFundingTime": mark_price.get("nextFundingTime", 0),
-            
-            # Open Interest
-            "openInterest": oi.get("openInterest", "0"),
-            "openInterestValue": str(
-                float(oi.get("openInterest", 0)) * float(mark_price.get("markPrice", 0))
-            ),
-            
-            # Additional info
-            "weightedAvgPrice": ticker.get("weightedAvgPrice", "0"),
-            "trades24h": ticker.get("count", 0),
-        }
-        
-        # Cache result
-        await cache.set(cache_key, result, ttl=5)
-        
-        return result
-        
+        ticker = await rest_client.get_ticker_24h(symbol)
+        if ticker:
+            result.update({
+                "lastPrice": ticker.get("lastPrice"),
+                "priceChange": ticker.get("priceChange"),
+                "priceChangePercent": ticker.get("priceChangePercent"),
+                "highPrice24h": ticker.get("highPrice"),
+                "lowPrice24h": ticker.get("lowPrice"),
+                "volume24h": ticker.get("volume"),
+                "quoteVolume24h": ticker.get("quoteVolume"),
+                "weightedAvgPrice": ticker.get("weightedAvgPrice"),
+            })
     except Exception as e:
-        logger.error("Failed to get market snapshot", symbol=symbol, error=str(e))
-        raise
+        logger.error("Error fetching ticker", symbol=symbol, error=str(e))
+    
+    try:
+        mark_price = await rest_client.get_mark_price(symbol)
+        if mark_price:
+            result.update({
+                "markPrice": mark_price.get("markPrice"),
+                "indexPrice": mark_price.get("indexPrice"),
+                "fundingRate": mark_price.get("lastFundingRate"),
+                "nextFundingTime": mark_price.get("nextFundingTime"),
+            })
+    except Exception as e:
+        logger.error("Error fetching mark price", symbol=symbol, error=str(e))
+    
+    try:
+        oi_data = await rest_client.get_open_interest(symbol)
+        if oi_data:
+            result.update({
+                "openInterest": oi_data.get("openInterest"),
+                "openInterestValue": str(
+                    float(oi_data.get("openInterest", 0)) * 
+                    float(result.get("markPrice", 0))
+                ) if result.get("markPrice") else None,
+            })
+    except Exception as e:
+        logger.error("Error fetching open interest", symbol=symbol, error=str(e))
+    
+    try:
+        orderbook = orderbook_manager.get_orderbook(symbol)
+        if orderbook:
+            best_bid = orderbook.get_best_bid()
+            best_ask = orderbook.get_best_ask()
+            
+            if best_bid and best_ask:
+                result.update({
+                    "bestBid": str(best_bid[0]),
+                    "bestBidQty": str(best_bid[1]),
+                    "bestAsk": str(best_ask[0]),
+                    "bestAskQty": str(best_ask[1]),
+                    "spread": str(best_ask[0] - best_bid[0]),
+                    "spreadPercent": str(
+                        (best_ask[0] - best_bid[0]) / best_bid[0] * 100
+                    ),
+                })
+    except Exception as e:
+        logger.error("Error fetching orderbook", symbol=symbol, error=str(e))
+    
+    return result
