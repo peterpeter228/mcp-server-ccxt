@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  crypto-mcp:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: crypto-orderflow-mcp
+    restart: unless-stopped
+    ports:
+      - "8022:8022"
+    environment:
+      # Binance API Configuration
+      - BINANCE_REST_URL=https://fapi.binance.com
+      - BINANCE_WS_URL=wss://fstream.binance.com
+      
+      # Symbols to track
+      - SYMBOLS=BTCUSDT,ETHUSDT
+      
+      # Server Configuration
+      - HOST=0.0.0.0
+      - PORT=8022
+      
+      # Database Configuration
+      - CACHE_DB_PATH=/app/data/orderflow_cache.db
+      
+      # Cache Settings
+      - TRADE_CACHE_DAYS=7
+      
+      # Volume Profile Settings
+      - VALUE_AREA_PERCENT=70
+      - TICK_SIZE_BTCUSDT=0.1
+      - TICK_SIZE_ETHUSDT=0.01
+      
+      # Session Times (UTC)
+      - SESSION_TOKYO_START=00:00
+      - SESSION_TOKYO_END=09:00
+      - SESSION_LONDON_START=07:00
+      - SESSION_LONDON_END=16:00
+      - SESSION_NY_START=13:00
+      - SESSION_NY_END=22:00
+      
+      # Imbalance Settings
+      - IMBALANCE_RATIO_THRESHOLD=3.0
+      - IMBALANCE_CONSECUTIVE_COUNT=3
+      
+      # Depth Delta Settings
+      - DEPTH_DELTA_PERCENT=1.0
+      - DEPTH_DELTA_INTERVAL_SEC=5
+      
+      # Logging
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json
+      
+    volumes:
+      - crypto-mcp-data:/app/data
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8022/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  crypto-mcp-data:
+    driver: local
