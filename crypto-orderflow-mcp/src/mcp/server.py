@@ -3,19 +3,12 @@
 import asyncio
 import json
 from typing import Any
-from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from sse_starlette.sse import EventSourceResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from mcp.server import Server
-from mcp.server.sse import SseServerTransport
-from mcp.types import (
-    Tool,
-    TextContent,
-    CallToolResult,
-)
+from mcp.types import Tool, TextContent
 
 from src.config import get_settings
 from src.utils import get_logger, timestamp_ms
@@ -284,6 +277,27 @@ def create_mcp_server(tools: MCPTools) -> tuple[FastAPI, Server]:
             logger.error("tool_error", name=name, error=str(e))
             return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
     
+    # Helper function to handle tool calls
+    async def handle_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Handle a tool call and return the result."""
+        contents = await call_tool(name, arguments)
+        return {"content": [{"type": c.type, "text": c.text} for c in contents]}
+    
+    # Helper function to list tools
+    async def handle_list_tools() -> dict[str, Any]:
+        """List available tools."""
+        tool_list = await list_tools()
+        return {
+            "tools": [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "inputSchema": t.inputSchema,
+                }
+                for t in tool_list
+            ]
+        }
+    
     # Create FastAPI app
     app = FastAPI(
         title="Crypto Orderflow MCP Server",
@@ -299,9 +313,6 @@ def create_mcp_server(tools: MCPTools) -> tuple[FastAPI, Server]:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    
-    # SSE transport for MCP
-    sse_transport = SseServerTransport("/sse")
     
     @app.get("/healthz")
     async def health_check():
@@ -340,38 +351,90 @@ def create_mcp_server(tools: MCPTools) -> tuple[FastAPI, Server]:
     
     @app.get("/sse")
     async def sse_endpoint(request: Request):
-        """SSE endpoint for MCP transport."""
+        """SSE endpoint for MCP transport - sends server info and keeps connection."""
         logger.info("sse_connection_started")
         
-        async def event_generator():
-            async with sse_transport.connect_sse(
-                request.scope,
-                request.receive,
-                request._send,
-            ) as streams:
-                await mcp.run(
-                    streams[0],
-                    streams[1],
-                    mcp.create_initialization_options(),
-                )
+        async def event_stream():
+            # Send initial connection event
+            init_data = {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "serverInfo": {
+                        "name": "crypto-orderflow-mcp",
+                        "version": "1.0.0",
+                    },
+                    "capabilities": {
+                        "tools": {},
+                    },
+                }
+            }
+            yield f"data: {json.dumps(init_data)}\n\n"
+            
+            # Keep connection alive with heartbeat
+            while True:
+                await asyncio.sleep(30)
+                yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': timestamp_ms()})}\n\n"
         
-        return EventSourceResponse(event_generator())
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            }
+        )
     
     @app.post("/sse")
-    async def sse_post_endpoint(request: Request):
-        """SSE POST endpoint for MCP messages."""
-        return await sse_transport.handle_post_message(
-            request.scope,
-            request.receive,
-            request._send,
-        )
+    async def sse_message_endpoint(request: Request):
+        """Handle SSE POST messages (tool calls)."""
+        try:
+            body = await request.json()
+            method = body.get("method")
+            params = body.get("params", {})
+            request_id = body.get("id")
+            
+            logger.info("sse_message", method=method)
+            
+            if method == "tools/list":
+                result = await handle_list_tools()
+            elif method == "tools/call":
+                result = await handle_tool_call(params.get("name"), params.get("arguments", {}))
+            elif method == "initialize":
+                result = {
+                    "protocolVersion": "2024-11-05",
+                    "serverInfo": {
+                        "name": "crypto-orderflow-mcp",
+                        "version": "1.0.0",
+                    },
+                    "capabilities": {
+                        "tools": {},
+                    },
+                }
+            else:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {"code": -32601, "message": f"Method not found: {method}"},
+                    },
+                )
+            
+            return JSONResponse(content={"jsonrpc": "2.0", "id": request_id, "result": result})
+        
+        except Exception as e:
+            logger.error("sse_message_error", error=str(e))
+            return JSONResponse(
+                status_code=500,
+                content={"jsonrpc": "2.0", "id": None, "error": {"code": -32603, "message": str(e)}},
+            )
     
     @app.post("/mcp")
     async def mcp_endpoint(request: Request):
-        """Streamable HTTP endpoint for MCP.
-        
-        This endpoint handles JSON-RPC style MCP requests directly.
-        """
+        """Streamable HTTP endpoint for MCP."""
         try:
             body = await request.json()
             method = body.get("method")
@@ -381,25 +444,10 @@ def create_mcp_server(tools: MCPTools) -> tuple[FastAPI, Server]:
             logger.info("mcp_request", method=method, params=params)
             
             if method == "tools/list":
-                tool_list = await list_tools()
-                result = {
-                    "tools": [
-                        {
-                            "name": t.name,
-                            "description": t.description,
-                            "inputSchema": t.inputSchema,
-                        }
-                        for t in tool_list
-                    ]
-                }
+                result = await handle_list_tools()
             
             elif method == "tools/call":
-                tool_name = params.get("name")
-                tool_args = params.get("arguments", {})
-                contents = await call_tool(tool_name, tool_args)
-                result = {
-                    "content": [{"type": c.type, "text": c.text} for c in contents]
-                }
+                result = await handle_tool_call(params.get("name"), params.get("arguments", {}))
             
             elif method == "initialize":
                 result = {
