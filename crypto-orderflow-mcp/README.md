@@ -79,7 +79,7 @@ cp .env.example .env
 # 编辑 .env 文件根据需要调整配置
 
 # 运行服务
-python -m src.main
+python run.py
 ```
 
 ### 方式三：Systemd 服务

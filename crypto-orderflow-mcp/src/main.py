@@ -3,8 +3,12 @@
 import asyncio
 import signal
 import sys
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+
+# Ensure project root is in path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import uvicorn
 from dotenv import load_dotenv
@@ -229,9 +233,12 @@ class CryptoOrderflowServer:
         # Initialize storage
         await self.storage.initialize()
         
-        # Initialize orderbooks
+        # Initialize orderbooks (non-blocking, will retry in background)
         for symbol in self.settings.symbol_list:
-            await self.orderbook.initialize_orderbook(symbol)
+            try:
+                await self.orderbook.initialize_orderbook(symbol)
+            except Exception as e:
+                self.logger.warning("orderbook_init_skipped", symbol=symbol, error=str(e))
         
         # Register WebSocket callbacks
         self.ws_client.on_trade(self._handle_trade)
@@ -239,8 +246,11 @@ class CryptoOrderflowServer:
         self.ws_client.on_mark_price(self._handle_mark_price)
         self.ws_client.on_liquidation(self._handle_liquidation)
         
-        # Start WebSocket connections
-        await self.ws_client.start(self.settings.symbol_list)
+        # Start WebSocket connections (non-blocking)
+        try:
+            await self.ws_client.start(self.settings.symbol_list)
+        except Exception as e:
+            self.logger.warning("websocket_start_skipped", error=str(e))
         
         # Start background tasks
         self._background_tasks = [
@@ -250,7 +260,7 @@ class CryptoOrderflowServer:
             asyncio.create_task(self._day_rollover_task()),
         ]
         
-        # Initial ticker fetch
+        # Initial ticker fetch (non-blocking)
         for symbol in self.settings.symbol_list:
             try:
                 ticker = await self.rest_client.get_ticker_24h(symbol)
@@ -262,7 +272,7 @@ class CryptoOrderflowServer:
                     quote_volume_24h=ticker.quote_volume,
                 )
             except Exception as e:
-                self.logger.error("initial_ticker_fetch_error", symbol=symbol, error=str(e))
+                self.logger.warning("initial_ticker_fetch_skipped", symbol=symbol, error=str(e))
         
         self.logger.info("server_started")
     

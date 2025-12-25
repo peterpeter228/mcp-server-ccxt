@@ -11,7 +11,7 @@ WorkingDirectory=/opt/crypto-orderflow-mcp
 Environment=PYTHONPATH=/opt/crypto-orderflow-mcp
 EnvironmentFile=/opt/crypto-orderflow-mcp/.env
 
-ExecStart=/opt/crypto-orderflow-mcp/venv/bin/python -m src.main
+ExecStart=/opt/crypto-orderflow-mcp/venv/bin/python /opt/crypto-orderflow-mcp/run.py
 ExecReload=/bin/kill -HUP $MAINPID
 
 Restart=always
