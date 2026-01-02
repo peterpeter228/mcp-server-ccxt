@@ -1,0 +1,32 @@
+[Unit]
+Description=CCXT MCP Server (SSE Mode - Port 8055)
+Documentation=https://github.com/doggybee/mcp-server-ccxt
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/workspace
+EnvironmentFile=/workspace/.env
+Environment=NODE_ENV=production
+Environment=MCP_TRANSPORT=sse
+Environment=MCP_HTTP_PORT=8055
+Environment=MCP_HTTP_HOST=0.0.0.0
+ExecStart=/usr/bin/node /workspace/build/index.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-server-ccxt
+
+# 安全设置
+NoNewPrivileges=true
+PrivateTmp=true
+
+# 资源限制
+LimitNOFILE=65536
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
