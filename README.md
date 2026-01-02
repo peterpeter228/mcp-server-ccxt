@@ -135,6 +135,10 @@ TRADE_DATA_DIR=./data
 # CORS (for SSE/HTTP modes)
 CORS_ORIGIN=*
 
+# Optional API keys for data source tools
+FRED_API_KEY=your_fred_api_key    # For macro event data
+ETHERSCAN_API_KEY=your_etherscan_key  # For ETH gas data
+
 # Proxy configuration (optional)
 USE_PROXY=false
 PROXY_URL=http://your-proxy-server:port
@@ -435,6 +439,32 @@ Get historical statistics for a trading template:
 - `round_price_to_tick`: Round price to tick size
 - `round_qty_to_step`: Round quantity to step size  
 - `validate_order_params`: Validate order parameters
+
+### Data Source Tools (NEW)
+
+Cross-exchange data, diagnostics, and quality assessment for Trading-COG-OS kernel compatibility.
+
+**P0 Tools (Critical Path):**
+- `mcp_ext-cross_exchange_anchor_consensus_a9YOaP`: Cross-exchange price consensus
+- `mcp_ext-spot_perp_basis_digest_a9YOaP`: Spot-perp basis and funding
+- `mcp_ext-orderbook_ws_qos_diagnostics_a9YOaP`: Orderbook freshness diagnostics
+- `mcp_ext-trade_activity_proxy_binance_a9YOaP`: Trade activity metrics
+
+**P1 Tools (Robustness):**
+- `mcp_ext-exchange_status_aggregator_a9YOaP`: Exchange status from statuspage
+- `mcp_ext-rate_limit_qos_state_a9YOaP`: Rate limit and QoS metrics
+- `mcp_ext-us_macro_event_window_fred_a9YOaP`: US macro events (requires FRED_API_KEY)
+- `mcp_ext-onchain_fee_congestion_a9YOaP`: BTC/ETH on-chain fees
+
+**P2 Tools (Supplementary):**
+- `mcp_ext-stablecoin_depeg_monitor_a9YOaP`: USDT/USDC depeg monitoring
+- `mcp_ext-volatility_regime_fallback_binance_a9YOaP`: Lightweight RV/ATR
+
+**Bonus Tools:**
+- `mcp_ext-data_conflict_digest_a9YOaP`: Price conflict analysis
+- `mcp_ext-cache_maintenance_digest_a9YOaP`: Cache health metrics
+
+See [docs/data-source-tools.md](docs/data-source-tools.md) for full documentation.
 
 ### Configuration & Utility Tools
 
