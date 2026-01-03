@@ -2,17 +2,14 @@
 /**
  * CCXT MCP Server
  * High-performance cryptocurrency exchange interface with optimized caching and rate limiting
- * Supports STDIO, HTTP Streamable, and SSE transport modes
+ * Supports STDIO and SSE transport modes
  * 
  * CCXT MCP 服务器
  * 具有优化缓存和速率限制的高性能加密货币交易所接口
- * 支持 STDIO、HTTP Streamable 和 SSE 传输模式
+ * 支持 STDIO 和 SSE 传输模式
  */
 
 // IMPORTANT: Redirect all console output to stderr to avoid messing with MCP protocol
-// This must be done before any imports that may log to console
-// 重要：将所有控制台输出重定向到stderr，避免干扰MCP协议
-// 这必须在任何可能记录到控制台的导入之前完成
 const originalConsoleLog = console.log;
 const originalConsoleInfo = console.info;
 const originalConsoleWarn = console.warn;
@@ -40,17 +37,14 @@ import { SUPPORTED_EXCHANGES, getExchange } from './exchange/manager.js';
 import { registerAllTools } from './tools/index.js';
 
 // Load environment variables
-// 加载环境变量
 dotenv.config();
 
 // Server configuration
-// 服务器配置
-const TRANSPORT_MODE = process.env.MCP_TRANSPORT || 'stdio'; // 'stdio', 'sse', 'http-stream'
+const TRANSPORT_MODE = process.env.MCP_TRANSPORT || 'stdio';
 const HTTP_PORT = parseInt(process.env.MCP_HTTP_PORT || '3000', 10);
 const HTTP_HOST = process.env.MCP_HTTP_HOST || '127.0.0.1';
 
 // Create MCP server
-// 创建MCP服务器
 const server = new McpServer({
   name: "CCXT MCP Server",
   version: "1.3.0",
@@ -61,7 +55,6 @@ const server = new McpServer({
 });
 
 // Resource: Exchanges list
-// 资源：交易所列表
 server.resource("exchanges", "ccxt://exchanges", async (uri) => {
   return {
     contents: [{
@@ -72,7 +65,6 @@ server.resource("exchanges", "ccxt://exchanges", async (uri) => {
 });
 
 // Resource template: Markets
-// 资源模板：市场
 server.resource("markets", new ResourceTemplate("ccxt://{exchange}/markets", { list: undefined }), 
   async (uri, params) => {
     try {
@@ -105,7 +97,6 @@ server.resource("markets", new ResourceTemplate("ccxt://{exchange}/markets", { l
 );
 
 // Resource template: Ticker
-// 资源模板：行情
 server.resource("ticker", new ResourceTemplate("ccxt://{exchange}/ticker/{symbol}", { list: undefined }), 
   async (uri, params) => {
     try {
@@ -132,7 +123,6 @@ server.resource("ticker", new ResourceTemplate("ccxt://{exchange}/ticker/{symbol
 );
 
 // Resource template: Order book
-// 资源模板：订单簿
 server.resource("order-book", new ResourceTemplate("ccxt://{exchange}/orderbook/{symbol}", { list: undefined }), 
   async (uri, params) => {
     try {
@@ -159,60 +149,54 @@ server.resource("order-book", new ResourceTemplate("ccxt://{exchange}/orderbook/
 );
 
 // Cache statistics tool
-// 缓存统计工具
 server.tool("cache-stats", "Get CCXT cache statistics", {}, async () => {
   return {
     content: [{
-      type: "text",
+      type: "text" as const,
       text: JSON.stringify(getCacheStats(), null, 2)
     }]
   };
 });
 
 // Cache clearing tool
-// 缓存清理工具
 server.tool("clear-cache", "Clear CCXT cache", {}, async () => {
   clearCache();
   return {
     content: [{
-      type: "text",
+      type: "text" as const,
       text: "Cache cleared successfully."
     }]
   };
 });
 
 // Log level management
-// 日志级别管理
 server.tool("set-log-level", "Set logging level", {
   level: z.enum(["debug", "info", "warning", "error"]).describe("Logging level to set")
 }, async ({ level }) => {
   setLogLevel(level);
   return {
     content: [{
-      type: "text",
+      type: "text" as const,
       text: `Log level set to ${level}.`
     }]
   };
 });
 
-// Active SSE transports for HTTP mode - keyed by session ID
-// HTTP模式下的活跃SSE传输 - 按会话ID索引
-const activeTransports = new Map<string, SSEServerTransport>();
+// Store active SSE transports
+const sseTransports: Map<string, SSEServerTransport> = new Map();
 
 /**
- * Create HTTP server for SSE/HTTP-Stream transport
- * 为SSE/HTTP-Stream传输创建HTTP服务器
+ * Create HTTP server for SSE transport
  */
 function createHttpServer(): http.Server {
   const httpServer = http.createServer(async (req, res) => {
     const parsedUrl = url.parse(req.url || '', true);
     const pathname = parsedUrl.pathname;
     
-    // CORS headers - set for all responses
+    // CORS headers
     res.setHeader('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Id');
-    res.setHeader('Access-Control-Expose-Headers', 'X-Session-Id');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
     
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -223,97 +207,11 @@ function createHttpServer(): http.Server {
     // Health check endpoint
     if (pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', transport: TRANSPORT_MODE }));
-      return;
-    }
-    
-    // SSE endpoint - establishes the SSE stream
-    if (pathname === '/sse' && req.method === 'GET') {
-      log(LogLevel.INFO, 'New SSE connection request');
-      
-      // Generate session ID
-      const sessionId = Date.now().toString(36) + Math.random().toString(36).substring(2);
-      
-      // Create SSE transport - the transport will write SSE headers
-      const transport = new SSEServerTransport('/message', res);
-      activeTransports.set(sessionId, transport);
-      
-      log(LogLevel.INFO, `SSE connection established: ${sessionId}`);
-      
-      // Handle connection close
-      res.on('close', () => {
-        log(LogLevel.INFO, `SSE connection closed: ${sessionId}`);
-        activeTransports.delete(sessionId);
-      });
-      
-      // Connect the MCP server to this transport
-      try {
-        await server.connect(transport);
-        log(LogLevel.INFO, `MCP server connected to transport: ${sessionId}`);
-      } catch (error) {
-        log(LogLevel.ERROR, `SSE connection error: ${error}`);
-        activeTransports.delete(sessionId);
-      }
-      
-      // Don't end the response - SSE keeps it open
-      return;
-    }
-    
-    // Message endpoint for SSE - handles POST messages from client
-    if (pathname === '/message' && req.method === 'POST') {
-      // Get session from query or find active transport
-      const sessionId = parsedUrl.query.sessionId as string;
-      
-      // Find the transport - try specific session first, then use first available
-      let transport: SSEServerTransport | undefined;
-      if (sessionId && activeTransports.has(sessionId)) {
-        transport = activeTransports.get(sessionId);
-      } else if (activeTransports.size > 0) {
-        // Use the most recent transport if no session specified
-        transport = Array.from(activeTransports.values()).pop();
-      }
-      
-      if (!transport) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'No active SSE connection. Connect to /sse first.' }));
-        return;
-      }
-      
-      // Let the transport handle the POST message
-      try {
-        await transport.handlePostMessage(req, res);
-      } catch (error) {
-        log(LogLevel.ERROR, `Message handling error: ${error}`);
-        if (!res.headersSent) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: String(error) }));
-        }
-      }
-      return;
-    }
-    
-    // Also support /messages path for compatibility
-    if (pathname === '/messages' && req.method === 'POST') {
-      let transport: SSEServerTransport | undefined;
-      if (activeTransports.size > 0) {
-        transport = Array.from(activeTransports.values()).pop();
-      }
-      
-      if (!transport) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'No active SSE connection. Connect to /sse first.' }));
-        return;
-      }
-      
-      try {
-        await transport.handlePostMessage(req, res);
-      } catch (error) {
-        log(LogLevel.ERROR, `Message handling error: ${error}`);
-        if (!res.headersSent) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: String(error) }));
-        }
-      }
+      res.end(JSON.stringify({ 
+        status: 'ok', 
+        transport: TRANSPORT_MODE,
+        activeSessions: sseTransports.size 
+      }));
       return;
     }
     
@@ -329,22 +227,86 @@ function createHttpServer(): http.Server {
           message: '/message',
           health: '/health'
         },
-        activeSessions: activeTransports.size,
-        documentation: 'https://github.com/doggybee/mcp-server-ccxt'
+        activeSessions: sseTransports.size
       }, null, 2));
+      return;
+    }
+    
+    // SSE endpoint - establishes SSE connection
+    if (pathname === '/sse' && req.method === 'GET') {
+      const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      log(LogLevel.INFO, `New SSE connection: ${sessionId}`);
+      
+      try {
+        // Create SSE transport - it will handle writing headers
+        const transport = new SSEServerTransport('/message', res);
+        sseTransports.set(sessionId, transport);
+        
+        // Clean up on connection close
+        res.on('close', () => {
+          log(LogLevel.INFO, `SSE connection closed: ${sessionId}`);
+          sseTransports.delete(sessionId);
+        });
+        
+        res.on('error', (err) => {
+          log(LogLevel.ERROR, `SSE connection error: ${sessionId} - ${err.message}`);
+          sseTransports.delete(sessionId);
+        });
+        
+        // Connect MCP server to this transport
+        await server.connect(transport);
+        log(LogLevel.INFO, `MCP connected to SSE transport: ${sessionId}`);
+        
+      } catch (error) {
+        log(LogLevel.ERROR, `Failed to establish SSE: ${error}`);
+        sseTransports.delete(sessionId);
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Failed to establish SSE connection' }));
+        }
+      }
+      return;
+    }
+    
+    // Message endpoint - receives POST messages from client
+    if (pathname === '/message' && req.method === 'POST') {
+      // Find an active transport to handle this message
+      if (sseTransports.size === 0) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No active SSE session. Connect to /sse first.' }));
+        return;
+      }
+      
+      // Get the transport (use first available for single-client scenarios)
+      const transport = sseTransports.values().next().value;
+      
+      if (!transport) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Transport not available' }));
+        return;
+      }
+      
+      try {
+        await transport.handlePostMessage(req, res);
+      } catch (error) {
+        log(LogLevel.ERROR, `Error handling message: ${error}`);
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Internal server error' }));
+        }
+      }
       return;
     }
     
     // 404 for unknown paths
     res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Not found' }));
+    res.end(JSON.stringify({ error: 'Not found', path: pathname }));
   });
   
   return httpServer;
 }
 
 // Start the server
-// 启动服务器
 async function main() {
   try {
     log(LogLevel.INFO, `Starting CCXT MCP Server (transport: ${TRANSPORT_MODE})...`);
@@ -353,44 +315,32 @@ async function main() {
     registerAllTools(server);
     
     if (TRANSPORT_MODE === 'stdio') {
-      // Configure transport to use pure stdio
-      // 配置传输以使用纯stdio
       const transport = new StdioServerTransport();
-      
-      // Connect to stdio transport
       await server.connect(transport);
-      
       log(LogLevel.INFO, "CCXT MCP Server is running (STDIO mode)");
-    } else if (TRANSPORT_MODE === 'sse' || TRANSPORT_MODE === 'http-stream') {
-      // Start HTTP server for SSE/HTTP-Stream
-      // 启动HTTP服务器用于SSE/HTTP-Stream
+    } else if (TRANSPORT_MODE === 'sse') {
       const httpServer = createHttpServer();
       
       httpServer.listen(HTTP_PORT, HTTP_HOST, () => {
-        log(LogLevel.INFO, `CCXT MCP Server is running (${TRANSPORT_MODE.toUpperCase()} mode)`);
+        log(LogLevel.INFO, `CCXT MCP Server is running (SSE mode)`);
         log(LogLevel.INFO, `Listening on http://${HTTP_HOST}:${HTTP_PORT}`);
         log(LogLevel.INFO, `SSE endpoint: http://${HTTP_HOST}:${HTTP_PORT}/sse`);
-        log(LogLevel.INFO, `HTTP Stream endpoint: http://${HTTP_HOST}:${HTTP_PORT}/mcp`);
+        log(LogLevel.INFO, `Message endpoint: http://${HTTP_HOST}:${HTTP_PORT}/message`);
       });
       
       // Graceful shutdown
-      process.on('SIGINT', () => {
+      const shutdown = () => {
         log(LogLevel.INFO, 'Shutting down server...');
         httpServer.close(() => {
           log(LogLevel.INFO, 'Server shut down');
           process.exit(0);
         });
-      });
+      };
       
-      process.on('SIGTERM', () => {
-        log(LogLevel.INFO, 'Shutting down server...');
-        httpServer.close(() => {
-          log(LogLevel.INFO, 'Server shut down');
-          process.exit(0);
-        });
-      });
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
     } else {
-      throw new Error(`Unknown transport mode: ${TRANSPORT_MODE}. Use 'stdio', 'sse', or 'http-stream'`);
+      throw new Error(`Unknown transport mode: ${TRANSPORT_MODE}. Use 'stdio' or 'sse'`);
     }
   } catch (error) {
     log(LogLevel.ERROR, `Failed to start server: ${error instanceof Error ? error.message : String(error)}`);
@@ -408,7 +358,7 @@ process.on('unhandledRejection', (reason) => {
   log(LogLevel.ERROR, `Unhandled rejection: ${reason}`);
 });
 
-// Export server for programmatic use
+// Export for programmatic use
 export { server, createHttpServer };
 
 // Start the MCP server
