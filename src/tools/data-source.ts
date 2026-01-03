@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { log, LogLevel } from '../utils/logging.js';
 import { normalizeSymbol, AllowedSymbol, getBaseAsset, getVenueQuoteCurrency } from '../lib/symbol.js';
-import { httpGet, httpGetMultiple, getHostStatistics, getCooldownRemaining, HttpResponse } from '../lib/http_client.js';
+import { httpGet, httpGetMultiple, getHostStatistics, getCooldownRemaining, resetHostCooldown, resetAllCooldowns, HttpResponse } from '../lib/http_client.js';
 import { dataSourceCache, getDataSourceCacheStats, TOOL_TTL } from '../lib/cache.js';
 import {
   QualityFlagBuilder,
@@ -698,31 +698,31 @@ export function registerDataSourceTools(server: McpServer) {
         // Since this repo doesn't have a WS manager, we use REST fallback
         flags.add(QUALITY_FLAGS.REST_SAMPLE_USED);
         
-        const { data: samples } = await dataSourceCache.getOrFetch(
-          'orderbook_ws_qos_diagnostics',
-          { symbol: normalizedSymbol, mode },
-          async () => {
-            // Take 3 samples over ~600ms to detect staleness
-            const sampleResults: Array<{ data: any; ts: number }> = [];
-            
-            for (let i = 0; i < 3; i++) {
-              const resp = await httpGet(
-                `${ENDPOINTS.BINANCE_FUTURES_DEPTH}?symbol=${normalizedSymbol}&limit=5`
-              );
-              if (resp.success && resp.data) {
-                sampleResults.push({
-                  data: resp.data,
-                  ts: Date.now()
-                });
-              }
-              if (i < 2) {
-                await new Promise(r => setTimeout(r, 200));
-              }
-            }
-            
-            return sampleResults;
+        // Don't use cache for diagnostics - always fetch fresh
+        // Take 3 samples over ~600ms to detect staleness
+        const samples: Array<{ data: any; ts: number }> = [];
+        let rateLimited = false;
+        
+        for (let i = 0; i < 3; i++) {
+          const resp = await httpGet(
+            `${ENDPOINTS.BINANCE_FUTURES_DEPTH}?symbol=${normalizedSymbol}&limit=5`,
+            { timeout: 5000 }
+          );
+          if (resp.success && resp.data) {
+            samples.push({
+              data: resp.data,
+              ts: Date.now()
+            });
+          } else if (resp.status === 429) {
+            rateLimited = true;
+            flags.add(QUALITY_FLAGS.RATE_LIMITED);
+            // Reset cooldown and wait before next sample
+            resetHostCooldown('fapi.binance.com');
           }
-        );
+          if (i < 2) {
+            await new Promise(r => setTimeout(r, 300)); // Increased delay between samples
+          }
+        }
         
         // Analyze samples
         let lastUpdateIdDelta = 0;
@@ -742,13 +742,25 @@ export function registerDataSourceTools(server: McpServer) {
             l1Mid = (bestBid + bestAsk) / 2;
             spreadBps = l1Mid > 0 ? Math.round((bestAsk - bestBid) / l1Mid * 10000) : 0;
           }
+        } else if (samples.length === 1) {
+          // Single sample available
+          const sample = samples[0];
+          if (sample.data.bids?.length && sample.data.asks?.length) {
+            const bestBid = parseFloat(sample.data.bids[0][0]);
+            const bestAsk = parseFloat(sample.data.asks[0][0]);
+            l1Mid = (bestBid + bestAsk) / 2;
+            spreadBps = l1Mid > 0 ? Math.round((bestAsk - bestBid) / l1Mid * 10000) : 0;
+          }
         }
         
         // Check for stall
         flags.addIf(lastUpdateIdDelta === 0 && samples.length >= 2, QUALITY_FLAGS.STALL_SUSPECTED);
         
+        // Determine success based on whether we got any samples
+        const success = samples.length > 0 || !rateLimited;
+        
         const output: OrderbookQosOutput = {
-          ...createBaseOutput(samples.length > 0, flags),
+          ...createBaseOutput(success, flags),
           ws: {
             connected: false,
             last_update_age_ms: 0,
@@ -758,7 +770,7 @@ export function registerDataSourceTools(server: McpServer) {
             spread_bps: 0
           },
           rest: {
-            sampled: true,
+            sampled: samples.length > 0,
             sample_count: samples.length,
             last_update_id_delta: lastUpdateIdDelta,
             l1_mid: Math.round(l1Mid * 100) / 100,
@@ -766,9 +778,8 @@ export function registerDataSourceTools(server: McpServer) {
           }
         };
         
-        // Mark WS as disconnected since we're using REST
-        output.ws!.connected = false;
-        flags.add(QUALITY_FLAGS.WS_DISCONNECTED);
+        // Mark WS as disconnected since we're using REST  
+        flags.addIf(samples.length > 0, QUALITY_FLAGS.WS_DISCONNECTED);
         
         return formatResponse(output);
         
@@ -811,36 +822,38 @@ export function registerDataSourceTools(server: McpServer) {
       try {
         const normalizedSymbol = normalizeSymbol(symbol);
         
-        const { data: trades } = await dataSourceCache.getOrFetch(
-          'trade_activity_proxy_binance',
-          { symbol: normalizedSymbol, lookback_sec },
-          async () => {
-            // Get server time first
-            const timeResp = await httpGet(ENDPOINTS.BINANCE_FUTURES_TIME);
-            const serverTime = timeResp.success ? timeResp.data.serverTime : Date.now();
-            
-            const endTime = serverTime;
-            const startTime = serverTime - (lookback_sec! * 1000);
-            
-            const tradesResp = await httpGet(
-              `${ENDPOINTS.BINANCE_FUTURES_AGG_TRADES}?symbol=${normalizedSymbol}&startTime=${startTime}&endTime=${endTime}&limit=${max_trades}`,
-              { timeout: 1500 }
-            );
-            
-            if (!tradesResp.success) {
-              if (tradesResp.status === 429) {
-                flags.add(QUALITY_FLAGS.RATE_LIMITED);
-              }
-              return [];
-            }
-            
-            return tradesResp.data || [];
-          }
+        // Don't use cache for this tool - always fetch fresh data
+        // because cached empty results cause persistent failures
+        let trades: any[] = [];
+        let fetchSuccess = false;
+        
+        // Get server time first
+        const timeResp = await httpGet(ENDPOINTS.BINANCE_FUTURES_TIME, { timeout: 5000 });
+        const serverTime = timeResp.success ? timeResp.data.serverTime : Date.now();
+        
+        const endTime = serverTime;
+        const startTime = serverTime - (lookback_sec! * 1000);
+        
+        const tradesResp = await httpGet(
+          `${ENDPOINTS.BINANCE_FUTURES_AGG_TRADES}?symbol=${normalizedSymbol}&startTime=${startTime}&endTime=${endTime}&limit=${max_trades}`,
+          { timeout: 8000 }
         );
+        
+        if (tradesResp.success && tradesResp.data) {
+          trades = tradesResp.data;
+          fetchSuccess = true;
+        } else {
+          if (tradesResp.status === 429) {
+            flags.add(QUALITY_FLAGS.RATE_LIMITED);
+            // Try to reset cooldown for retry
+            resetHostCooldown('fapi.binance.com');
+          }
+          log(LogLevel.WARNING, `trade_activity_proxy fetch failed: ${tradesResp.error}`);
+        }
         
         // Check for insufficient data
         flags.addIf(trades.length < QUALITY_THRESHOLDS.MIN_TRADES_FOR_ANALYSIS, QUALITY_FLAGS.INSUFFICIENT_DATA);
-        flags.addIf(trades.length === 0, QUALITY_FLAGS.NO_DATA);
+        flags.addIf(trades.length === 0 && !fetchSuccess, QUALITY_FLAGS.NO_DATA);
         
         // Calculate metrics
         let totalVolQuote = 0;
@@ -892,7 +905,8 @@ export function registerDataSourceTools(server: McpServer) {
           });
         }
         
-        const success = trades.length > 0;
+        // Return success even with empty data if fetch succeeded (just no trades in window)
+        const success = fetchSuccess;
         
         const output: TradeActivityOutput = {
           ...createBaseOutput(success, flags),
@@ -1458,25 +1472,25 @@ export function registerDataSourceTools(server: McpServer) {
       try {
         const normalizedSymbol = normalizeSymbol(symbol);
         
-        const { data: klines } = await dataSourceCache.getOrFetch(
-          'volatility_regime_fallback_binance',
-          { symbol: normalizedSymbol, interval, limit },
-          async () => {
-            const resp = await httpGet(
-              `${ENDPOINTS.BINANCE_FUTURES_KLINES}?symbol=${normalizedSymbol}&interval=${interval}&limit=${limit}`,
-              { timeout: 1500 }
-            );
-            
-            if (!resp.success) {
-              if (resp.status === 429) {
-                flags.add(QUALITY_FLAGS.RATE_LIMITED);
-              }
-              return [];
-            }
-            
-            return resp.data || [];
-          }
+        // Fetch klines directly (don't cache rate-limited empty results)
+        const resp = await httpGet(
+          `${ENDPOINTS.BINANCE_FUTURES_KLINES}?symbol=${normalizedSymbol}&interval=${interval}&limit=${limit}`,
+          { timeout: 8000 }
         );
+        
+        let klines: any[] = [];
+        let fetchSuccess = false;
+        
+        if (resp.success && resp.data) {
+          klines = resp.data;
+          fetchSuccess = true;
+        } else {
+          if (resp.status === 429) {
+            flags.add(QUALITY_FLAGS.RATE_LIMITED);
+            resetHostCooldown('fapi.binance.com');
+          }
+          log(LogLevel.WARNING, `volatility_regime klines fetch failed: ${resp.error}`);
+        }
         
         if (klines.length < period_atr!) {
           flags.add(QUALITY_FLAGS.INSUFFICIENT_DATA);
@@ -1539,9 +1553,9 @@ export function registerDataSourceTools(server: McpServer) {
           : 0;
         
         // Range
-        const rangePoints = maxHigh - minLow;
+        const rangePoints = klines.length > 0 ? maxHigh - minLow : 0;
         
-        const success = klines.length > 0;
+        const success = fetchSuccess && klines.length > 0;
         
         const output: VolatilityOutput = {
           ...createBaseOutput(success, flags),
@@ -1708,5 +1722,48 @@ export function registerDataSourceTools(server: McpServer) {
     }
   );
 
-  log(LogLevel.INFO, 'Data source tools registered (12 tools)');
+  // =========================================================================
+  // BONUS-3: Reset Rate Limiter Tool
+  // =========================================================================
+  server.tool(
+    'mcp_ext-reset_rate_limiter_a9YOaP',
+    'Reset rate limiter cooldowns to recover from 429 errors. Use when tools report rate_limited flag.',
+    {
+      host: z.string().optional()
+        .describe('Specific host to reset (e.g., fapi.binance.com). If not specified, resets all hosts.')
+    },
+    async ({ host }) => {
+      const flags = new QualityFlagBuilder();
+      
+      try {
+        if (host) {
+          const success = resetHostCooldown(host);
+          return formatResponse({
+            ...createBaseOutput(true, flags),
+            action: 'reset_single_host',
+            host,
+            success,
+            message: success 
+              ? `Rate limiter cooldown reset for ${host}` 
+              : `No rate limiter state found for ${host}`
+          });
+        } else {
+          resetAllCooldowns();
+          return formatResponse({
+            ...createBaseOutput(true, flags),
+            action: 'reset_all_hosts',
+            message: 'All rate limiter cooldowns have been reset'
+          });
+        }
+      } catch (error) {
+        log(LogLevel.ERROR, `reset_rate_limiter error: ${error}`);
+        return formatResponse({
+          ...createBaseOutput(false, flags),
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+  );
+
+  log(LogLevel.INFO, 'Data source tools registered (13 tools)');
 }

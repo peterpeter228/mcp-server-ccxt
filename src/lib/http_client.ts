@@ -9,12 +9,13 @@
 import { log, LogLevel } from '../utils/logging.js';
 
 // Default configuration
-const DEFAULT_TIMEOUT_MS = 5000;  // Increased from 1200ms to 5000ms
+const DEFAULT_TIMEOUT_MS = 8000;  // 8s default timeout for external APIs
 const DEFAULT_MAX_RETRIES = 2;
-const DEFAULT_BASE_DELAY_MS = 300;
-const MAX_DELAY_MS = 2000;
-const CIRCUIT_BREAKER_COOLDOWN_MS = 5000; // 5-15s jitter
-const MAX_CONCURRENT_PER_HOST = 2;
+const DEFAULT_BASE_DELAY_MS = 500;  // Increased base delay
+const MAX_DELAY_MS = 3000;
+const CIRCUIT_BREAKER_COOLDOWN_MS = 3000; // Reduced from 5s to 3s base cooldown
+const CIRCUIT_BREAKER_MAX_JITTER_MS = 5000; // 0-5s jitter (total 3-8s cooldown)
+const MAX_CONCURRENT_PER_HOST = 3;  // Increased from 2 to 3
 
 /**
  * HTTP request options
@@ -151,9 +152,32 @@ function isInCooldown(host: string): boolean {
  */
 function triggerCircuitBreaker(host: string): void {
   const stats = getHostStats(host);
-  const jitter = Math.random() * 10000; // 0-10s jitter
+  const jitter = Math.random() * CIRCUIT_BREAKER_MAX_JITTER_MS;
   stats.cooldownUntil = Date.now() + CIRCUIT_BREAKER_COOLDOWN_MS + jitter;
   log(LogLevel.WARNING, `Circuit breaker triggered for ${host}, cooldown until ${new Date(stats.cooldownUntil).toISOString()}`);
+}
+
+/**
+ * Reset circuit breaker cooldown for a host
+ */
+export function resetHostCooldown(host: string): boolean {
+  const stats = hostStats.get(host);
+  if (stats) {
+    stats.cooldownUntil = 0;
+    log(LogLevel.INFO, `Circuit breaker cooldown reset for ${host}`);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Reset all host cooldowns
+ */
+export function resetAllCooldowns(): void {
+  for (const [host, stats] of hostStats) {
+    stats.cooldownUntil = 0;
+  }
+  log(LogLevel.INFO, 'All circuit breaker cooldowns reset');
 }
 
 /**
