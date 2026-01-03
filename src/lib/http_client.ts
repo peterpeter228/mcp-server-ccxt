@@ -9,10 +9,10 @@
 import { log, LogLevel } from '../utils/logging.js';
 
 // Default configuration
-const DEFAULT_TIMEOUT_MS = 1200;
+const DEFAULT_TIMEOUT_MS = 5000;  // Increased from 1200ms to 5000ms
 const DEFAULT_MAX_RETRIES = 2;
-const DEFAULT_BASE_DELAY_MS = 200;
-const MAX_DELAY_MS = 800;
+const DEFAULT_BASE_DELAY_MS = 300;
+const MAX_DELAY_MS = 2000;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 5000; // 5-15s jitter
 const MAX_CONCURRENT_PER_HOST = 2;
 
@@ -290,14 +290,28 @@ export async function httpGet<T = any>(
         
         if (error.name === 'AbortError') {
           lastError = `Request timeout after ${timeout}ms`;
+        } else if (error.code === 'ENOTFOUND' || error.code === 'EAI_AGAIN') {
+          lastError = `DNS resolution failed for ${host}`;
+        } else if (error.code === 'ECONNREFUSED') {
+          lastError = `Connection refused by ${host}`;
+        } else if (error.code === 'ETIMEDOUT' || error.code === 'ESOCKETTIMEDOUT') {
+          lastError = `Connection timeout to ${host}`;
+        } else if (error.cause) {
+          // Node.js fetch wraps errors in cause
+          lastError = `Network error: ${error.cause.message || error.cause.code || 'Unknown'}`;
         } else {
           lastError = error.message || String(error);
         }
         lastStatus = 0;
         
-        // Don't retry on abort
+        log(LogLevel.DEBUG, `HTTP request failed: ${url} - ${lastError}`);
+        
+        // Don't retry on abort or DNS errors
         if (error.name === 'AbortError' && attempt === retries) {
           break;
+        }
+        if (error.code === 'ENOTFOUND' || error.code === 'EAI_AGAIN') {
+          break; // DNS errors won't resolve with retry
         }
       }
     }
