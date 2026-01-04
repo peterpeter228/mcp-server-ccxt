@@ -104,11 +104,13 @@ export function registerBinanceFuturesTools(server: McpServer) {
             return parseExchangeInfoFromMarket(market);
           }, 5 * 60 * 1000); // Cache for 5 minutes
           
+          // Return both content (text) and structuredContent (for MCP routers that expect it)
           return {
             content: [{
               type: 'text',
               text: JSON.stringify(info, null, 2)
-            }]
+            }],
+            structuredContent: info
           };
         });
       } catch (error) {
@@ -1340,18 +1342,21 @@ export function registerBinanceFuturesTools(server: McpServer) {
         
         const roundedPrice = roundPriceToTick(price, exchangeInfo.tickSize, side);
         
+        const result = {
+          symbol: validSymbol,
+          original_price: price,
+          rounded_price: roundedPrice,
+          tick_size: exchangeInfo.tickSize,
+          side,
+          direction: side === 'BUY' ? 'rounded_down' : 'rounded_up'
+        };
+        
         return {
           content: [{
             type: 'text',
-            text: JSON.stringify({
-              symbol: validSymbol,
-              original_price: price,
-              rounded_price: roundedPrice,
-              tick_size: exchangeInfo.tickSize,
-              side,
-              direction: side === 'BUY' ? 'rounded_down' : 'rounded_up'
-            }, null, 2)
-          }]
+            text: JSON.stringify(result, null, 2)
+          }],
+          structuredContent: result
         };
       } catch (error) {
         return {
@@ -1392,17 +1397,20 @@ export function registerBinanceFuturesTools(server: McpServer) {
         
         const roundedQty = roundQtyToStep(qty, exchangeInfo.stepSize);
         
+        const result = {
+          symbol: validSymbol,
+          original_qty: qty,
+          rounded_qty: roundedQty,
+          step_size: exchangeInfo.stepSize,
+          direction: 'rounded_down'
+        };
+        
         return {
           content: [{
             type: 'text',
-            text: JSON.stringify({
-              symbol: validSymbol,
-              original_qty: qty,
-              rounded_qty: roundedQty,
-              step_size: exchangeInfo.stepSize,
-              direction: 'rounded_down'
-            }, null, 2)
-          }]
+            text: JSON.stringify(result, null, 2)
+          }],
+          structuredContent: result
         };
       } catch (error) {
         return {
@@ -1445,16 +1453,19 @@ export function registerBinanceFuturesTools(server: McpServer) {
         
         const validation = validateOrderParams(price, qty, side, exchangeInfo);
         
+        const result = {
+          symbol: validSymbol,
+          input: { price, qty, side },
+          validation,
+          exchange_info: exchangeInfo
+        };
+        
         return {
           content: [{
             type: 'text',
-            text: JSON.stringify({
-              symbol: validSymbol,
-              input: { price, qty, side },
-              validation,
-              exchange_info: exchangeInfo
-            }, null, 2)
-          }]
+            text: JSON.stringify(result, null, 2)
+          }],
+          structuredContent: result
         };
       } catch (error) {
         return {

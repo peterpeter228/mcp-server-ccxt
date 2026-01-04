@@ -211,13 +211,23 @@ export function registerPublicTools(server: McpServer) {
     }
   });
 
-  // Get exchange markets
-  // 获取交易所市场
-  server.tool("get-markets", "Get all available markets for an exchange", {
+  // Get exchange markets (optimized with filtering)
+  // 获取交易所市场（优化版，支持过滤）
+  server.tool("get-markets", "Get available markets for an exchange with optional filtering. Returns compact market info to avoid context overflow.", {
     exchange: z.string().describe("Exchange ID (e.g., binance, coinbase)"),
+    marketType: z.enum(["spot", "future", "swap", "option", "margin", "all"]).optional().default("all")
+      .describe("Filter by market type"),
+    quote: z.string().optional()
+      .describe("Filter by quote currency (e.g., USDT, USD, BTC)"),
+    base: z.string().optional()
+      .describe("Filter by base currency (e.g., ETH, BTC)"),
+    search: z.string().optional()
+      .describe("Search in symbol (e.g., 'ETH' matches ETH/USDT, ETH/BTC, etc.)"),
+    active: z.boolean().optional().default(true)
+      .describe("Only return active markets"),
     page: z.number().optional().default(1).describe("Page number"),
-    pageSize: z.number().optional().default(100).describe("Items per page")
-  }, async ({ exchange, page, pageSize }) => {
+    pageSize: z.number().optional().default(20).describe("Items per page (max 50, default 20)")
+  }, async ({ exchange, marketType, quote, base, search, active, page, pageSize }) => {
     try {
       return await rateLimiter.execute(exchange, async () => {
         const ex = getExchange(exchange);
@@ -229,19 +239,71 @@ export function registerPublicTools(server: McpServer) {
           return Object.values(ex.markets);
         }, 3600000); // Cache for 1 hour
         
-        // Simple pagination
-        const start = (page - 1) * pageSize;
-        const end = start + pageSize;
-        const pagedMarkets = allMarkets.slice(start, end);
+        // Apply filters
+        let filteredMarkets = allMarkets.filter((market: any) => {
+          // Market type filter
+          if (marketType && marketType !== 'all' && market.type !== marketType) {
+            return false;
+          }
+          // Quote currency filter
+          if (quote && market.quote?.toUpperCase() !== quote.toUpperCase()) {
+            return false;
+          }
+          // Base currency filter
+          if (base && market.base?.toUpperCase() !== base.toUpperCase()) {
+            return false;
+          }
+          // Active filter
+          if (active && market.active === false) {
+            return false;
+          }
+          // Symbol search
+          if (search && !market.symbol?.toUpperCase().includes(search.toUpperCase())) {
+            return false;
+          }
+          return true;
+        });
+        
+        // Cap pageSize at 50 to prevent context overflow
+        const effectivePageSize = Math.min(pageSize, 50);
+        
+        // Pagination
+        const start = (page - 1) * effectivePageSize;
+        const end = start + effectivePageSize;
+        const pagedMarkets = filteredMarkets.slice(start, end);
+        
+        // Return compact market info (essential fields only)
+        const compactMarkets = pagedMarkets.map((m: any) => ({
+          symbol: m.symbol,
+          base: m.base,
+          quote: m.quote,
+          type: m.type,
+          active: m.active,
+          // Precision info
+          pricePrecision: m.precision?.price,
+          amountPrecision: m.precision?.amount,
+          // Limits
+          minAmount: m.limits?.amount?.min,
+          minCost: m.limits?.cost?.min,
+          // Contract info (if applicable)
+          linear: m.linear,
+          inverse: m.inverse,
+          contractSize: m.contractSize,
+          settle: m.settle
+        }));
         
         return {
           content: [{
             type: "text",
             text: JSON.stringify({
+              exchange,
+              filters: { marketType, quote, base, search, active },
               total: allMarkets.length,
+              filtered: filteredMarkets.length,
               page,
-              pageSize,
-              data: pagedMarkets
+              pageSize: effectivePageSize,
+              totalPages: Math.ceil(filteredMarkets.length / effectivePageSize),
+              data: compactMarkets
             }, null, 2)
           }]
         };
@@ -297,21 +359,36 @@ export function registerPublicTools(server: McpServer) {
 
   // Get futures leverage tiers
   // 获取期货杠杆级别
-  server.tool("get-leverage-tiers", "Get futures leverage tiers for trading pairs", {
+  server.tool("get-leverage-tiers", "Get futures leverage tiers for trading pairs. For Binance perpetual, use symbol format like 'ETH/USDT:USDT' or just 'ETH/USDT' (auto-converted).", {
     exchange: z.string().describe("Exchange ID (e.g., binance, bybit)"),
-    symbol: z.string().optional().describe("Trading pair symbol (optional, e.g., BTC/USDT)"),
-    marketType: z.enum(["future", "swap"]).default("future").describe("Market type (default: future)")
+    symbol: z.string().optional().describe("Trading pair symbol (e.g., BTC/USDT:USDT for perpetual, or BTC/USDT which auto-converts)"),
+    marketType: z.enum(["future", "swap"]).default("future").describe("Market type (default: future for USDT-M perpetual)")
   }, async ({ exchange, symbol, marketType }) => {
     try {
       return await rateLimiter.execute(exchange, async () => {
         // Get futures exchange
         const ex = getExchangeWithMarketType(exchange, marketType);
-        const cacheKey = `leverage_tiers:${exchange}:${marketType}:${symbol || 'all'}`;
+        
+        // Auto-convert symbol format for perpetual markets on Binance
+        // ETH/USDT -> ETH/USDT:USDT (linear perpetual)
+        let convertedSymbol = symbol;
+        if (symbol && exchange.toLowerCase() === 'binance' && (marketType === 'swap' || marketType === 'future')) {
+          if (!symbol.includes(':')) {
+            // Add :USDT suffix for USDT-margined perpetuals
+            const parts = symbol.split('/');
+            if (parts.length === 2 && parts[1] === 'USDT') {
+              convertedSymbol = `${symbol}:USDT`;
+              log(LogLevel.INFO, `Auto-converted symbol ${symbol} -> ${convertedSymbol} for Binance ${marketType} market`);
+            }
+          }
+        }
+        
+        const cacheKey = `leverage_tiers:${exchange}:${marketType}:${convertedSymbol || 'all'}`;
         
         const tiers = await getCachedData(cacheKey, async () => {
-          log(LogLevel.INFO, `Fetching leverage tiers for ${symbol || 'all symbols'} on ${exchange} (${marketType})`);
-          if (symbol) {
-            return await ex.fetchMarketLeverageTiers(symbol);
+          log(LogLevel.INFO, `Fetching leverage tiers for ${convertedSymbol || 'all symbols'} on ${exchange} (${marketType})`);
+          if (convertedSymbol) {
+            return await ex.fetchMarketLeverageTiers(convertedSymbol);
           } else {
             return await ex.fetchLeverageTiers();
           }
@@ -320,7 +397,12 @@ export function registerPublicTools(server: McpServer) {
         return {
           content: [{
             type: "text",
-            text: JSON.stringify(tiers, null, 2)
+            text: JSON.stringify({
+              symbol: convertedSymbol,
+              originalSymbol: symbol,
+              marketType,
+              tiers
+            }, null, 2)
           }]
         };
       });
@@ -338,21 +420,36 @@ export function registerPublicTools(server: McpServer) {
   
   // Get funding rates
   // 获取资金费率
-  server.tool("get-funding-rates", "Get current funding rates for perpetual contracts", {
+  server.tool("get-funding-rates", "Get current funding rates for perpetual contracts. For Binance perpetual, use symbol format like 'ETH/USDT:USDT' or just 'ETH/USDT' (auto-converted).", {
     exchange: z.string().describe("Exchange ID (e.g., binance, bybit)"),
-    symbols: z.array(z.string()).optional().describe("List of trading pair symbols (optional)"),
-    marketType: z.enum(["future", "swap"]).default("swap").describe("Market type (default: swap)")
+    symbols: z.array(z.string()).optional().describe("List of trading pair symbols (e.g., ['ETH/USDT:USDT'] or ['ETH/USDT'])"),
+    marketType: z.enum(["future", "swap"]).default("future").describe("Market type (default: future for USDT-M perpetual)")
   }, async ({ exchange, symbols, marketType }) => {
     try {
       return await rateLimiter.execute(exchange, async () => {
         // Get futures exchange
         const ex = getExchangeWithMarketType(exchange, marketType);
-        const cacheKey = `funding_rates:${exchange}:${marketType}:${symbols ? symbols.join(',') : 'all'}`;
+        
+        // Auto-convert symbol format for perpetual markets on Binance
+        let convertedSymbols = symbols;
+        if (symbols && exchange.toLowerCase() === 'binance' && (marketType === 'swap' || marketType === 'future')) {
+          convertedSymbols = symbols.map(sym => {
+            if (!sym.includes(':')) {
+              const parts = sym.split('/');
+              if (parts.length === 2 && parts[1] === 'USDT') {
+                return `${sym}:USDT`;
+              }
+            }
+            return sym;
+          });
+        }
+        
+        const cacheKey = `funding_rates:${exchange}:${marketType}:${convertedSymbols ? convertedSymbols.join(',') : 'all'}`;
         
         const rates = await getCachedData(cacheKey, async () => {
-          log(LogLevel.INFO, `Fetching funding rates for ${symbols ? symbols.length : 'all'} symbols on ${exchange} (${marketType})`);
-          if (symbols) {
-            return await ex.fetchFundingRates(symbols);
+          log(LogLevel.INFO, `Fetching funding rates for ${convertedSymbols ? convertedSymbols.length : 'all'} symbols on ${exchange} (${marketType})`);
+          if (convertedSymbols) {
+            return await ex.fetchFundingRates(convertedSymbols);
           } else {
             return await ex.fetchFundingRates();
           }
@@ -361,7 +458,12 @@ export function registerPublicTools(server: McpServer) {
         return {
           content: [{
             type: "text",
-            text: JSON.stringify(rates, null, 2)
+            text: JSON.stringify({
+              symbols: convertedSymbols,
+              originalSymbols: symbols,
+              marketType,
+              rates
+            }, null, 2)
           }]
         };
       });
