@@ -359,26 +359,26 @@ export function registerPublicTools(server: McpServer) {
 
   // Get futures leverage tiers
   // 获取期货杠杆级别
-  server.tool("get-leverage-tiers", "Get futures leverage tiers for trading pairs. For Binance swap markets, use symbol format like 'ETH/USDT:USDT' or just 'ETH/USDT' (auto-converted).", {
+  server.tool("get-leverage-tiers", "Get futures leverage tiers for trading pairs. For Binance perpetual, use symbol format like 'ETH/USDT:USDT' or just 'ETH/USDT' (auto-converted).", {
     exchange: z.string().describe("Exchange ID (e.g., binance, bybit)"),
-    symbol: z.string().optional().describe("Trading pair symbol (e.g., BTC/USDT:USDT for swap, or BTC/USDT which auto-converts)"),
-    marketType: z.enum(["future", "swap"]).default("swap").describe("Market type (default: swap for perpetual)")
+    symbol: z.string().optional().describe("Trading pair symbol (e.g., BTC/USDT:USDT for perpetual, or BTC/USDT which auto-converts)"),
+    marketType: z.enum(["future", "swap"]).default("future").describe("Market type (default: future for USDT-M perpetual)")
   }, async ({ exchange, symbol, marketType }) => {
     try {
       return await rateLimiter.execute(exchange, async () => {
         // Get futures exchange
         const ex = getExchangeWithMarketType(exchange, marketType);
         
-        // Auto-convert symbol format for swap markets on Binance
+        // Auto-convert symbol format for perpetual markets on Binance
         // ETH/USDT -> ETH/USDT:USDT (linear perpetual)
         let convertedSymbol = symbol;
-        if (symbol && exchange.toLowerCase() === 'binance' && marketType === 'swap') {
+        if (symbol && exchange.toLowerCase() === 'binance' && (marketType === 'swap' || marketType === 'future')) {
           if (!symbol.includes(':')) {
             // Add :USDT suffix for USDT-margined perpetuals
             const parts = symbol.split('/');
             if (parts.length === 2 && parts[1] === 'USDT') {
               convertedSymbol = `${symbol}:USDT`;
-              log(LogLevel.INFO, `Auto-converted symbol ${symbol} -> ${convertedSymbol} for Binance swap market`);
+              log(LogLevel.INFO, `Auto-converted symbol ${symbol} -> ${convertedSymbol} for Binance ${marketType} market`);
             }
           }
         }
@@ -420,19 +420,19 @@ export function registerPublicTools(server: McpServer) {
   
   // Get funding rates
   // 获取资金费率
-  server.tool("get-funding-rates", "Get current funding rates for perpetual contracts. For Binance swap markets, use symbol format like 'ETH/USDT:USDT' or just 'ETH/USDT' (auto-converted).", {
+  server.tool("get-funding-rates", "Get current funding rates for perpetual contracts. For Binance perpetual, use symbol format like 'ETH/USDT:USDT' or just 'ETH/USDT' (auto-converted).", {
     exchange: z.string().describe("Exchange ID (e.g., binance, bybit)"),
     symbols: z.array(z.string()).optional().describe("List of trading pair symbols (e.g., ['ETH/USDT:USDT'] or ['ETH/USDT'])"),
-    marketType: z.enum(["future", "swap"]).default("swap").describe("Market type (default: swap)")
+    marketType: z.enum(["future", "swap"]).default("future").describe("Market type (default: future for USDT-M perpetual)")
   }, async ({ exchange, symbols, marketType }) => {
     try {
       return await rateLimiter.execute(exchange, async () => {
         // Get futures exchange
         const ex = getExchangeWithMarketType(exchange, marketType);
         
-        // Auto-convert symbol format for swap markets on Binance
+        // Auto-convert symbol format for perpetual markets on Binance
         let convertedSymbols = symbols;
-        if (symbols && exchange.toLowerCase() === 'binance' && marketType === 'swap') {
+        if (symbols && exchange.toLowerCase() === 'binance' && (marketType === 'swap' || marketType === 'future')) {
           convertedSymbols = symbols.map(sym => {
             if (!sym.includes(':')) {
               const parts = sym.split('/');
