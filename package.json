@@ -1,6 +1,6 @@
 {
   "name": "@mcpfun/mcp-server-ccxt",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "description": "High-performance CCXT MCP server for cryptocurrency exchange integration with Binance Futures risk management tools",
   "main": "build/index.js",
   "type": "module",
